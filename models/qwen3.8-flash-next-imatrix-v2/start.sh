@@ -114,8 +114,16 @@ esac
 #   --cache-reuse 256：复用 256+ token 连续缓存块（本档无 --mmproj，cache-reuse 有效）
 #   --cache-idle-slots：空闲 slot 保留 KV cache，配合 slot LCP 复用实现多轮加速
 #   注：本 build 不支持长选项 --cms；-cms（checkpoint-min-step）对本档长上下文收益有限，故不加
+#
+# ★ 2026-10-08 优化（host RAM 治理，实测定位）：
+#   --cache-ram 1024：**server prompt cache 的 host RAM 上限，默认 8192 MiB（8 GiB）**。
+#     机制：--cache-idle-slots 在新任务到达时，把空闲 slot 的 KV 序列化进 host RAM，再清空 device KV
+#     —— 本质是「用 host RAM 换显存」。本机 carve-out 余 52 GiB、host RAM 仅 30 GiB，方向相反。
+#     实测 35B 档 RssAnon = 8.37 GiB ≈ 8192 MiB 上限；本档同源机制、同样吃默认值。
+#     降到 1024 MiB 省约 7 GiB host RAM；槽内 LCP 前缀复用不受影响。
+#     （另一条路：--cache-ram 0 可完全禁用，但 --cache-idle-slots 要求 cache-ram > 0，须一并去掉。）
 TUNING=(--spec-type draft-mtp,ngram-map-k -ctk q8_0 -ctv q8_0 --spec-draft-n-max 2
-        --cache-reuse 256 --cache-idle-slots)
+        --cache-reuse 256 --cache-idle-slots --cache-ram 1024)
 
 # ---- 前台还是后台 ----
 # FORCE_BG=1 供 switch-model.sh 调用：外层已有等待逻辑，这里必须后台返回，

@@ -44,3 +44,14 @@
 - `400 Failed to tokenize prompt` + `media markers ... exceeds number of bitmaps`：
   纯文本请求被注入 `<__media_...__>` 占位符却未附图片。新开对话绕过；
   中期查代理 `X-Trim-Prompt` 裁剪是否误留 marker，或客户端纯文本请求不应注入 media marker
+
+## prompt cache 吃 host RAM（2026-10-08 定位，最容易误判）
+
+- 参数 `--cache-ram N`（短 `-cram`），**默认 8192 MiB = 8 GiB**
+- `--cache-idle-slots` 依赖它：新任务到达时把空闲 slot 的 KV **序列化进 host RAM**，
+  再清空 device KV → 本质是「用 host RAM 换显存」
+- 症状：llama-server 用久了 host 内存上涨、重启就变小；`RssAnon ≈ 8.37 GiB ≈ 8192 MiB + 基础开销`
+- 日志特征：反复 `making room for prompt cache entry, removing oldest entry (size = ~126 MiB)`
+- 本机 carve-out 余 52 GiB、host 仅 30 GiB → **方向相反**，应降到 `--cache-ram 1024`（省约 7 GiB）；
+  完全禁用用 `0`，但 `--cache-idle-slots` 要求 cache-ram > 0，须一并去掉
+- 交叉验证：Vulkan 的权重/KV/计算缓冲全落 carve-out，GTT 稳定 1.69 GiB 零增长

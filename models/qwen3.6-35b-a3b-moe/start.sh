@@ -32,7 +32,7 @@
 set -euo pipefail
 
 BIN_DIR=$HOME/llama-qwen4exp-rocmfpx/build-vk4/bin
-MODEL=$HOME/models/Qwen3.6-35B-A3B-Uncensored-Q4_K_P.gguf
+MODEL=$HOME/models/Qwen3.6-35B-A3B-Uncensored-Q5_K_P.gguf
 DRAFT=$HOME/models/Qwen3.6-35B-A3B-MTP-ONLY-Q4_K_M.gguf
 MMPROJ=$HOME/models/mmproj-Qwen3.6-35B-A3B-Uncensored-f16.gguf
 PORT=${PORT:-8080}
@@ -103,8 +103,8 @@ echo "[OK] 环境自检通过：二进制/模型就绪，端口 $PORT 空闲，I
 # ---- 参数档 ----
 # 权重 23.42 GB + 草稿 1.62 GB + mmproj 0.90 GB ≈ 25.9 GB，KV 另计；96 GiB 显存充裕。
 case "$MODE" in
-    multi) CTX_ARGS=(-c 65536 -np 3 -b 2048 -ub 1024) ;;   # 并发优先（3 槽）
-    *)     CTX_ARGS=(-c 131072 -np 2 -b 4096 -ub 1024) ;;  # 速度优先（2 槽）；本 build 真实上限 131072（-c 262144 被强行 clamp）
+    multi) CTX_ARGS=(-c 65536 -np 2 -b 2048 -ub 1024) ;;   # 并发优先（2 槽，-np 从 3 降到 2 省 KV）
+    *)     CTX_ARGS=(-c 262144 -np 1 -b 4096 -ub 1024) ;;  # 速度优先；-c 262144 = 模型训练上限(qwen35moe.context_length)，无 clamp（2026-10-23 更正）
 esac
 
 case "$MODE" in
@@ -136,10 +136,29 @@ esac
 #     "cache_reuse is not supported by multimodal, it will be disabled" → 该参数在 mmproj 下无效，已移除。
 #   --cache-idle-slots：空闲 slot 保留 KV cache，配合 slot 内置 LCP 前缀复用，实现同会话轮次间 202× 加速。
 #   -cms 512（= --checkpoint-min-step）：长上下文 checkpoint 间隔从默认 8192 降到 512，超长上下文续写更稳。
-#   ★ 真实上下文上限 = 131072：本 build 把 -c 262144 强行 clamp 到模型原生 131072（日志证实
-#     "request (200020 tokens) exceeds the available context size (131072 tokens)"），故 CTX_ARGS 改 -c 131072。
+#   ★ 2026-10-23 更正（撤销 10-03 误判）：本 build **不存在** -c 262144 clamp。
+#     源码 llama-context.cpp:131 为 n_ctx = params.n_ctx==0 ? n_ctx_train : params.n_ctx；
+#     :325 仅在 n_ctx>n_ctx_train 时 WARN（possible training context overflow），不截断。
+#     GGUF qwen35moe.context_length = 262144。
+#     10-03 看到的 "exceeds 131072" 是因为当时 CTX_ARGS 本身设的就是 -c 131072（请求 200020 > 131072），
+#     不是 build 截断。故恢复 -c 262144；KV(q8_0) 由 1.33 GiB 增至 2.66 GiB，96 GiB carve-out 充裕。
+#
+# ★ 2026-10-08 优化（host RAM 治理，实测定位）：
+#   --cache-ram 1024：**server prompt cache 的 host RAM 上限，默认 8192 MiB（8 GiB）**。
+#     机制：--cache-idle-slots 在新任务到达时，把空闲 slot 的 KV 序列化进 host RAM
+#     （llama_state_seq_get_data），再清空 device KV —— 本质是「用 host RAM 换显存」。
+#     实测：llama-server RssAnon = 8.37 GiB ≈ 8192 MiB + 基础开销；
+#     实例日志 61 次 "making room for prompt cache entry, removing oldest entry (size = 126.169 MiB)"
+#     （缓存已满并在循环淘汰）。这正是「用久了内存上涨、重启就变少」的元凶。
+#     本机 carve-out 余 52 GiB、host RAM 仅 30 GiB → 该权衡方向与本机资源分布相反。
+#     降到 1024 MiB 可省约 7 GiB host RAM；-np 1 下槽内 LCP 前缀复用不受影响。
+#     交叉验证：llama.cpp(Vulkan) 的权重/KV/计算缓冲全部落 carve-out，
+#     GTT 稳定 1.69 GiB 零增长（发请求前后 VRAM 43.76→43.74G、GTT 1.69→1.69G）。
 TUNING=(--spec-draft-n-max 2 -ctk q8_0 -ctv q8_0
-        --cache-idle-slots -cms 512)
+        --context-shift \
+        --cache-idle-slots -cms 512 --cache-ram 1024)
+# --context-shift：上下文满 CTX 时丢弃最旧 token 继续生成（原生溢出保护，触发点=100%）。
+#   若要「用量到 75% 即压缩」：把上方 -c 改成 196608（=0.75×262144），shift 即在 196608 触发。
 
 # ---- 前台还是后台 ----
 # FORCE_BG=1 供 switch-model.sh 调用：外层已有等待逻辑，这里必须后台返回，
