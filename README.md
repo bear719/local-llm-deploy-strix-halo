@@ -23,13 +23,14 @@
 .
 ├── README.md
 ├── docs/
-│   ├── 00-hardware-and-environment.md   # 硬件 / Vulkan vs HIP / GTT / ICD / rocm-smi
+│   ├── 00-hardware-and-environment.md   # 硬件 / Vulkan vs HIP / 双池记账 / ICD / 上下文上限
 │   ├── 01-common-pitfalls.md            # 反代 SSE、cache-ram、cross-slot、私有量化
 │   ├── 02-panel-and-ops.md              # MCSManager 面板化、孤儿进程、日志、分时复用
 │   ├── 03-npu-8219.md                   # AMD XDNA2 NPU（FLM）测试与接入
 │   ├── 04-openwebui.md                  # Open WebUI 双端点接入
 │   ├── 05-model-catalog.md              # 社区量化模型清单与选型
-│   └── 06-video-pipeline.md             # 视频模型方案（sd.cpp / GTT 池隔离）
+│   ├── 06-video-pipeline.md             # 视频模型方案（sd.cpp / GTT 池隔离）
+│   └── 07-strata-halo-evaluation.md     # Strata（125B MoE 专家分层）可行性与对比分析
 ├── models/
 │   ├── qwen3.6-35b-a3b-moe/             # start.sh + benchmarks + legacy-params
 │   ├── qwen3.8-27b/                     # 基座说明 + 调优结论
