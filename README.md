@@ -51,7 +51,10 @@
 │   ├── 04-openwebui.md                  # Open WebUI 双端点接入
 │   ├── 05-model-catalog.md              # 社区量化模型清单与选型
 │   ├── 06-video-pipeline.md             # 视频模型方案（sd.cpp / GTT 池隔离）
-│   └── 07-strata-halo-evaluation.md     # Strata（125B MoE 专家分层）可行性与对比分析
+│   ├── 07-strata-halo-evaluation.md     # Strata（125B MoE 专家分层）可行性与对比分析
+│   ├── 08-gufo-halo-evaluation.md       # Gufo（gfx1151 原生 HIP 引擎）可行性与 BIOS 零和代价
+│   ├── 09-strata-community-benchmark-forecast.md # 社区倍数折算 + 四场景收益矩阵 + 场景 D 调优清单
+│   └── 10-local-llm-daily-baseline.md   # 运行基线快照、参数漂移核查、优化候选、社区数字采纳原则
 ├── models/
 │   ├── qwen3.6-35b-a3b-moe/             # start.sh + benchmarks + legacy-params
 │   ├── qwen3.8-27b/                     # 基座说明 + 调优结论
@@ -97,6 +100,18 @@
 
 - `VK_ICD_FILENAMES` 必须指向真实存在的 ICD 文件，否则 Vulkan 枚举不到设备 → 静默退化 CPU 推理（速度掉 2 倍+ 且不报错）。
 - 任何「莫名慢但没报错」先查 Vulkan 设备枚举（见 `docs/00`）。
+
+## 换引擎前先算清的一件事：BIOS 内存分法是零和的
+
+本机把 **96 GiB** 划给 BIOS UMA carve-out（iGPU 可见，OS 不可见），OS 只剩 **30.47 GiB**（GTT 池上限 = host MemTotal）。这条分法决定了两类引擎的命运：
+
+| 引擎类型 | 内存后盾 | 本机可用 | 结论 |
+|---|---|---|---|
+| Vulkan（llama.cpp / sd.cpp） | carve-out 96 GiB | 充足 | 现有生产栈 |
+| HIP `hipMalloc` 类（PyTorch / ComfyUI / Strata） | GTT，实际受 host RAM 约束 | 约 8–10 GiB | 必退化到 SSD 分层 |
+| HIP host-mapped 类（Gufo / Halogen，mmap + `hsa_amd_register_*`） | OS 可见页 | 30 GiB，连最小 27B Q4 的 39 GiB 都装不下 | 装不上，直接 `bad_alloc` |
+
+**关键教训**：看到「某引擎在 Strix Halo 上很快」先问它的权重落在哪一池。同一块硅、不同的切法，结果互斥。改 BIOS 到小 carve-out 能解锁 HIP 系引擎，代价是现有 Vulkan 栈（35B Q4_K_P / Q5_K_P / MiniMax-H3 / sd.cpp）全部无法加载，且 `amd_iommu=off` 会连带禁用 NPU。详见 `docs/08`、`docs/09`。
 
 ## License
 
