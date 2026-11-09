@@ -54,7 +54,8 @@
 │   ├── 07-strata-halo-evaluation.md     # Strata（125B MoE 专家分层）可行性与对比分析
 │   ├── 08-gufo-halo-evaluation.md       # Gufo（gfx1151 原生 HIP 引擎）可行性与 BIOS 零和代价
 │   ├── 09-strata-community-benchmark-forecast.md # 社区倍数折算 + 四场景收益矩阵 + 场景 D 调优清单
-│   └── 10-local-llm-daily-baseline.md   # 运行基线快照、参数漂移核查、优化候选、社区数字采纳原则
+│   ├── 10-local-llm-daily-baseline.md   # 运行基线快照、参数漂移核查、优化候选、社区数字采纳原则
+│   └── 2026-11-*.md                     # 每日增量专题（NPU 重定位 / FLM / ASR / 引擎评估），见「近期同步」
 ├── models/
 │   ├── qwen3.6-35b-a3b-moe/             # start.sh + benchmarks + legacy-params
 │   ├── qwen3.8-27b/                     # 基座说明 + 调优结论
@@ -95,6 +96,54 @@
 
 仓库每天 23:30 扫描工作区新增/变更的经验文档与脚本，按模型归入对应目录，提交并推送到 `main` 与相关 `model/*` 分支。
 导播台与短剧经验分别归入 `director-console/` 与 `drama/`，并同步到 `drama/director-console` 与 `drama/production` 两条分支。
+
+## 近期同步（2026-11-07 ~ 11-09）：NPU 重定位、KV cache 落显存、ASR 纠错
+
+这一批是三个方向的连贯实验，结论已互相咬合，建议按顺序读。
+
+### 一、NPU 从「什么都能跑」收缩到「只接批量无生成任务」
+
+| 文档 | 一句话结论 |
+|---|---|
+| `docs/2026-11-08-npu-gpu-coexistence.md` | NPU 与 GPU **可共存**，但 NPU 严格串行且吃 host RAM（memlock 2.9 GB）；低频占空比仅 −1.5% decode |
+| `docs/2026-11-08-npu-task-allocation.md` | 现状下的任务分配表：embedding ✅ / ASR ⚠️ / chat 仅兜底 |
+| `docs/2026-11-08-npu-bypass-model-selection.md` | 旁路模型选型：1.2B 级够用，4B 换不来判断力 |
+| `docs/2026-11-08-npu-repositioning.md` | **judge 不迁 NPU**（1.2B 判定 11/20 vs 35B 20/20 @0.63 s）——格式可强制，判断力不可强制 |
+| `docs/2026-11-08-four-apps-npu-judge.md` | 四应用接入实测 + judge 必须经 18090（直连 8080 时 12.5 s/合法率 2/3） |
+| `docs/2026-11-08-flm-upgrade-and-flash.md` | FLM v1.0.x 各版本行为差异与「Flash」模型判定口径 |
+| `docs/2026-11-08-flm-v1012-lfm25-bypass.md` | v1.0.12 落地：三模型常驻（chat/embed/asr）的启动姿势与面板托管约束 |
+| `docs/2026-11-08-asr-accuracy.md` | ASR 中文纠错：拼音层确定性纠错把 CER 从 **23.06% → 4.11%** |
+
+### 二、KV / prompt cache 落到 GPU carve-out（35B 运行时）
+
+| 文档 | 一句话结论 |
+|---|---|
+| `models/qwen3.6-35b-a3b-moe/2026-11-09-kv-slot-snapshot-feasibility.md` | KV 槽快照的收益测算与三个本机特有否决点 |
+| `models/qwen3.6-35b-a3b-moe/2026-11-09-kv-slot-snapshot-rejected.md` | `--slot-save-path` 路径**否决**：快照不含 checkpoints，restore 后 `cache_n=0` |
+| `models/qwen3.6-35b-a3b-moe/2026-11-09-prompt-cache-to-vram.md` | 改造落点后：27.5K 三应用轮转 VmRSS 8.40→0.42 GB、命中 29.4 s→0.68 s；**全局改 DEVICE_LOCAL 会让 decode 掉 46%** |
+| `models/qwen3.6-35b-a3b-moe/2026-11-09-cache-ram-100k.md` | `--cache-ram` 语义反直觉：`-1` 比正数 MiB **更严格**；100K 上下文冷 prefill 216 s（463 t/s），切走再回 14.3 s |
+
+### 三、引擎与项目评估
+
+| 文档 | 一句话结论 |
+|---|---|
+| `docs/2026-11-07-halogen-vs-gufo.md` | Halogen 与 Gufo 在本机的适配性判定（同属 HIP host-mapped 类，装不下） |
+| `docs/2026-11-08-gufo-host-27b-35b-forecast.md` | Gufo 加载 27B/35B 的可行性分档与收益预测 |
+| `docs/2026-11-08-colibri-analysis.md` | colibri 引擎对照评估（Vulkan 构建 vs llama.cpp） |
+| `docs/2026-11-09-llama-modchip-radar.md` | `llama-modchip` 项目雷达：12 项技术逐条判定 + 明确不要抄的部分 |
+| `docs/2026-11-08-daily-report.md` / `docs/2026-11-09-daily-report.md` | 当日运行快照（端口、显存、命中率、异常） |
+
+### 新增工具
+
+| 工具 | 用途 |
+|---|---|
+| `tools/pyfix.py` | 中文 ASR 拼音层确定性纠错（模糊音归一化 + 医学词表） |
+| `tools/asr-bench.py` | ASR 纠错前后 CER 对照测速 |
+| `tools/preload_system_prompt.py` | 预置 system prompt 以命中 slot 前缀复用 |
+| `tools/bench-npu-models.py` / `bench-judge-*.py` | NPU 旁路模型与 judge schema 压测 |
+| `tools/apply-npu-route.py` / `verify-npu-route.py` | 应用侧 NPU 路由写入与验证 |
+| `tools/start-flm-npu.sh` | FLM NPU 三模型常驻启动脚本（须面板托管） |
+| `tools/docproxy/` | 渐进式披露代理（更新版：chunked 上传解码 + SSE 心跳修复） |
 
 ## 通用前置（必读）
 

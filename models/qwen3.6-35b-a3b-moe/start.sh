@@ -31,10 +31,10 @@
 
 set -euo pipefail
 
-BIN_DIR=$HOME/llama-qwen4exp-rocmfpx/build-vk4/bin
-MODEL=$HOME/models/Qwen3.6-35B-A3B-Uncensored-Q5_K_P.gguf
-DRAFT=$HOME/models/Qwen3.6-35B-A3B-MTP-ONLY-Q4_K_M.gguf
-MMPROJ=$HOME/models/mmproj-Qwen3.6-35B-A3B-Uncensored-f16.gguf
+BIN_DIR=/home/<user>/llama-qwen4exp-rocmfpx/build-vk4/bin
+MODEL=/home/<user>/models/Qwen3.6-35B-A3B-Uncensored-Q5_K_P.gguf
+DRAFT=/home/<user>/models/Qwen3.6-35B-A3B-MTP-ONLY-Q4_K_M.gguf
+MMPROJ=/home/<user>/models/mmproj-Qwen3.6-35B-A3B-Uncensored-f16.gguf
 PORT=${PORT:-8080}
 SUFFIX=$(id -u)
 LOG=/tmp/qwen36-35b-a3b-server-$SUFFIX.log
@@ -154,11 +154,56 @@ esac
 #     降到 1024 MiB 可省约 7 GiB host RAM；-np 1 下槽内 LCP 前缀复用不受影响。
 #     交叉验证：llama.cpp(Vulkan) 的权重/KV/计算缓冲全部落 carve-out，
 #     GTT 稳定 1.69 GiB 零增长（发请求前后 VRAM 43.76→43.74G、GTT 1.69→1.69G）。
+# ★ 2026-11-09 23:1x host RAM 止血（少爷选方案 B，不动 -np）
+#   实测现场：host total 31.2 GB / available 仅 6.3 GB / swap 已用 13.8 GB；
+#             llama-server VmRSS 8.40 GB，其中 VmSwap 3.38 GB（已被换出 → 推理会被 swap-in 卡）。
+#   真凶①：`--cache-ram -1` 在源码里等价 limit_size = 0（server-task.h:614
+#           `limit_size = (limit_size_mib < 0 ? 0 : ...)`），**字节无上限**，
+#           只剩 limit_tokens = n_ctx = 262144 兜底 → 条目在 host heap 里持续堆积。
+#           日志原文：`cache token limit (262144, est: 262144) reached,
+#           removing oldest entry (size = 792.746 MiB)`。
+#   真凶②：`--ctx-checkpoints` 默认 **32 个/槽**（common/common.h:641），
+#           每个 100–190 MiB → ≈3.7 GiB host heap。`-cms 8192` 下 262144/8192=32，正好撑满。
+#   真凶③：`server_prompt_data` 是 std::vector<uint8_t>（server-task.h:588），纯 CPU 堆，
+#           llama.cpp **无任何参数**能把它放 GPU。KV 本体早在 Vulkan0（2720 MiB）里。
+#   → 2026-11-09 23:2x **已改造 binary**：prompt cache 与 context checkpoint 的状态
+#     字节流改由 `ggml_prompt_bytes`（common/prompt-buffer.h）分配到 GPU 的
+#     host-visible buffer（Vulkan_Host）——物理落 96 GiB carve-out，**不占 host RSS**
+#     （实证：空载 RssAnon 321 MB 而 Vulkan_Host 已分配 1044 MiB）。
+#     → 因此 --cache-ram 不再受 host RAM 约束，直接给 **8192 MiB**（全在显存）。
+#     → 关掉改造：环境变量 PROMPT_BUF_ON_GPU=0 启动即回落普通堆。
+#     → 彻底回滚二进制：cp build-vk4/bin/.bak-20261109/{libllama-server-impl.so,libllama-common.so*} bin/
+#   最轻回滚（不动二进制）：CACHE_RAM_MIB=1024 重启。
+# ★ 2026-11-09 23:4x 源码复核：`-1` 与正数 MiB 的容量语义是反的（勿凭直觉）
+#   server-task.cpp:1885
+#     limit_tokens_cur = limit_size > 0 ? max(limit_tokens, limit_size/size_per_token)
+#                                       : limit_tokens;      // ← -1 走这条
+#   -1 → limit_size=0 → 字节维度关闭，token 上限**退回硬值 n_ctx=262144**
+#        ⇒ 100K 条目只能驻留 2 条（第 3 条即淘汰）。
+#   正数 MiB → 字节上限把 token 上限「顶上去」（max 取大）
+#        ⇒ 8192 MiB ≈ 40 万 token（4 条 100K）；16384 MiB ≈ 69 万（7 条 100K）。
+#   即：**-1 比 8192 更早淘汰**，只有「单条目超过字节上限」时才需要 -1，
+#   而 100K 条目 ≈1.9–2.3 GiB 远小于 16 GiB，不会触发 server-task.cpp:1731 的跳过分支。
+# ★ 2026-11-09 23:4x 少爷常跑 100K+ → 定档 cache-ram 16384 + ctx-checkpoints 16
+#   -cms 8192 × 16 = 131072 覆盖窗口（原 8 → 只覆盖 65536，100K 处前 35K 无截断点）。
+#   100K 条目在 -cms 8192 下产生 12 个 checkpoint（<16，不浪费）；
+#   体积外推：66 MB(SSM) + 1038 MiB(KV) + ~1284 MiB(12 ckpt) ≈ 2.33 GiB/条，
+#   7 条 ≈ 16.3 GiB，全在 carve-out（主模型 43.7 GB + KV 2.7 GB + 计算 0.5 GB ≈ 47 GiB，总量 ~63/96 GiB）。
+#   ⚠️ --ctx-checkpoints 是**每槽**：-np 2 时是 32 个，VRAM 翻倍。
 TUNING=(--spec-draft-n-max 2 -ctk q8_0 -ctv q8_0
         --context-shift \
-        --cache-idle-slots -cms 512 --cache-ram 1024)
+        --cache-idle-slots -cms 8192 \
+        --cache-ram "${CACHE_RAM_MIB-16384}" \
+        --ctx-checkpoints "${CTX_CHECKPOINTS-16}")
 # --context-shift：上下文满 CTX 时丢弃最旧 token 继续生成（原生溢出保护，触发点=100%）。
 #   若要「用量到 75% 即压缩」：把上方 -c 改成 196608（=0.75×262144），shift 即在 196608 触发。
+
+# ---- prompt/checkpoint 落点开关（2026-11-09）----
+# 默认 1 = 落 GPU carve-out（Vulkan_HostDL）。存在 /tmp/prompt_buf_off 标记文件时强制
+# 关闭，回到 CPU 堆 —— 用于快速 A/B 对照（touch /tmp/prompt_buf_off 后重启即可）。
+if [[ -f /tmp/prompt_buf_off ]]; then
+    export PROMPT_BUF_ON_GPU=0
+fi
 
 # ---- 前台还是后台 ----
 # FORCE_BG=1 供 switch-model.sh 调用：外层已有等待逻辑，这里必须后台返回，
@@ -201,3 +246,5 @@ else
     echo "已启动 PID $(cat "$PIDFILE")，模式=$MODE，日志 $LOG"
     echo "加载约 20~30 秒，用 '$0 status' 查看进度"
 fi
+
+# 许可：CC0-1.0，公共领域贡献，无任何限制。

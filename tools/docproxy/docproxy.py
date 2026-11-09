@@ -77,6 +77,78 @@ INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docindex.json"
 PREVIEW_LIMITS = {".md": 2000, ".txt": 2000, ".log": 2000, ".csv": 1500,
                   ".pdf": 500, ".docx": 500, ".pptx": 500, ".xlsx": 800}
 
+# ---------- NPU 旁路分流（2026-11-08 新增，默认关闭 → 天然可回滚） ----------
+# 只接受「显式标记」的分流，绝不根据 prompt 内容猜测，避免把重要请求误送 4B。
+# NPU_UPSTREAM 留空时，所有代码路径与打补丁前完全一致；清空该变量即完成逻辑回滚。
+NPU_UPSTREAM = os.environ.get("NPU_UPSTREAM", "").rstrip("/")
+NPU_MODEL_TAG = os.environ.get("NPU_MODEL_TAG", "lfm2.5-it:1.2b")
+NPU_MODEL_ALIASES = set(
+    x.strip().lower()
+    for x in os.environ.get(
+        "NPU_MODEL_ALIASES",
+        # 2026-11-08：默认旁路模型改为 lfm2.5-it:1.2b（v1.0.12 已装）；
+        # 4B 旧权重在 v1.0.3+ 已失效，仅保留别名以兼容既有客户端。
+        "lfm2.5-it:1.2b,qwen3.5:4b,qwen3.5:2b,qwen3.5:0.8b,"
+        "embed-gemma:300m,whisper-v3:turbo",
+    ).split(",") if x.strip()
+)
+# 置 1 才让 /v1/embeddings 与 /v1/audio/* 自动分流（需 flm 以 --embed/--asr 启动）
+NPU_SIDECAR = os.environ.get("NPU_SIDECAR", "0").lower() not in ("0", "false", "no")
+# host RAM 水位线（MiB）。NPU 进程吃的是 30.47 GiB host RAM，不是 96 GiB carve-out；
+# 2026-10-08 实测 HIP 分配 20 GiB 时 avail 仅 494 MiB → 全局 OOM，故必须设闸门。
+NPU_MIN_MEMAVAIL_MIB = int(os.environ.get("NPU_MIN_MEMAVAIL_MIB", "4096"))
+# 置 1 时对 /v1/audio/transcriptions 的返回文本做拼音层纠错。
+# 只做**确定性层**（英文术语 + 精确同音 + 虚词），不调 LLM ——
+# 代理是在线服务，不能为一次转写额外引入 0.6s/处的模型判别延迟。
+# 需要带模糊匹配+整句判别的完整版，用 tools/pyfix.py 离线跑。
+NPU_ASR_FIX = os.environ.get("NPU_ASR_FIX", "0").lower() not in ("0", "false", "no")
+_ASR_IDX = None
+
+
+def asr_postprocess(raw: bytes, ctype: str = "") -> bytes:
+    """对 ASR 响应正文做确定性纠错。任何异常都原样返回，绝不阻塞转写。"""
+    global _ASR_IDX
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return raw                       # 非 JSON（如 text/plain）原样放过
+    if not isinstance(obj, dict):
+        return raw
+    try:
+        import pyfix
+        if _ASR_IDX is None:
+            _ASR_IDX = pyfix.build_index()
+        idx = _ASR_IDX
+
+        def _fix(t):
+            if not isinstance(t, str) or not t.strip():
+                return t
+            en, _ = pyfix.fix_english(t)
+            t1, _, _ = pyfix.fix_text(en, idx, min_sim=0.999)
+            t2, _ = pyfix.fix_verbs(t1)
+            return t2
+
+        changed = False
+        if isinstance(obj.get("text"), str):
+            new = _fix(obj["text"])
+            if new != obj["text"]:
+                obj["text"] = new
+                changed = True
+        # verbose_json 的分段文本同步处理，否则两者会不一致
+        for seg in (obj.get("segments") or []):
+            if isinstance(seg, dict) and isinstance(seg.get("text"), str):
+                new = _fix(seg["text"])
+                if new != seg["text"]:
+                    seg["text"] = new
+                    changed = True
+        if not changed:
+            return raw
+        if LOG_REQUESTS:
+            sys.stderr.write("[docproxy] ASR 文本已做拼音层纠错\n")
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    except Exception:
+        return raw
+
 
 # ---------- 文本抽取（只读，不改动源文件） ----------
 
@@ -389,7 +461,46 @@ def handle_chat(body, verbose=True):
 
 # ---------- 透传（兼容 OpenAI 客户端） ----------
 
-def forward_to_upstream(self, method, path, raw=None, stream=False):
+class NpuRouteError(Exception):
+    """分流被拒（水位线不足等），由 do_POST 转成显式 503，不静默回落到 8080。"""
+
+
+def mem_available_mib():
+    """读取 /proc/meminfo 的 MemAvailable（MiB），读不到返回 None。"""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        return None
+    return None
+
+
+def npu_route(headers, body, path):
+    """返回 (base_url, is_npu)。base_url=None 表示继续走默认 8080 上游。"""
+    if not NPU_UPSTREAM:
+        return None, False
+    force = (headers.get("X-Backend") or "").strip().lower() == "npu"
+    model = (body.get("model") or "") if isinstance(body, dict) else ""
+    alias_hit = str(model).strip().lower() in NPU_MODEL_ALIASES
+    sidecar_hit = NPU_SIDECAR and (
+        path.startswith("/v1/embeddings") or path.startswith("/v1/audio/")
+    )
+    if not (force or alias_hit or sidecar_hit):
+        return None, False
+    if NPU_MIN_MEMAVAIL_MIB > 0:
+        avail = mem_available_mib()
+        if avail is not None and avail < NPU_MIN_MEMAVAIL_MIB:
+            raise NpuRouteError(
+                "MemAvailable %s MiB < %s MiB，NPU 分流暂停（不回落到 8080）"
+                % (avail, NPU_MIN_MEMAVAIL_MIB)
+            )
+    return NPU_UPSTREAM, True
+
+
+def forward_to_upstream(self, method, path, raw=None, stream=False,
+                        base_url=None, content_type=None):
     """把请求原样转发到上游并回传响应。stream=True 时逐块透传 SSE。
 
     2026-10-02 修复（流式响应永不结束，导致客户端一直"思考中"）：
@@ -402,7 +513,7 @@ def forward_to_upstream(self, method, path, raw=None, stream=False):
          客户端解析不到合法 data 行同样悬挂。现按上游状态码分支。
       3. 上游长时间无数据（长 prefill）时发 SSE 注释心跳，防 idle 超时。
     """
-    u = urllib.parse.urlparse(UPSTREAM)
+    u = urllib.parse.urlparse(base_url or UPSTREAM)
     conn = http.client.HTTPConnection(u.hostname, u.port, timeout=UPSTREAM_TIMEOUT)
     body = raw if raw is not None else b""
     t0 = time.time()
@@ -412,7 +523,7 @@ def forward_to_upstream(self, method, path, raw=None, stream=False):
     nbytes = 0
     try:
         conn.request(method, path, body=body,
-                     headers={"Content-Type": "application/json"})
+                     headers={"Content-Type": content_type or "application/json"})
         resp = conn.getresponse()
         ctype = resp.getheader("Content-Type", "application/json")
         status = resp.status
@@ -450,6 +561,9 @@ def forward_to_upstream(self, method, path, raw=None, stream=False):
         else:
             data = resp.read()
             ttfb = time.time() - t0
+            # ASR 返回文本做拼音层纠错（默认关，NPU_ASR_FIX=1 开启）
+            if NPU_ASR_FIX and 200 <= status < 300 and path.startswith("/v1/audio/"):
+                data = asr_postprocess(data, ctype)
             nbytes = len(data)
             # 上游非 2xx 时原样回状态码和错误体，不再伪装成 200
             self.send_response(status)
@@ -558,21 +672,44 @@ class Handler(BaseHTTPRequestHandler):
         p = self.path.split("?")[0].rstrip("/")
         if p in ("", "/health"):
             self._send(200, {"status": "ok", "proxy": "docproxy",
-                             "mode": PROXY_MODE, "upstream": UPSTREAM})
+                             "mode": PROXY_MODE, "upstream": UPSTREAM,
+                             "npu_upstream": NPU_UPSTREAM or None,
+                             "npu_enabled": bool(NPU_UPSTREAM)})
         elif p in ("/files", "/v1/files"):
             self._send(200, load_index()["files"])
         elif p in ("/v1/models", "/models"):
-            forward_to_upstream(self,"GET", "/v1/models")
+            want_npu = (self.headers.get("X-Backend") or "").strip().lower() == "npu"
+            forward_to_upstream(
+                self, "GET", "/v1/models",
+                base_url=NPU_UPSTREAM if (want_npu and NPU_UPSTREAM) else None)
         else:
             self._send(404, {"error": "not found", "path": self.path})
+
+    def do_OPTIONS(self):
+        """支持 CORS 预检请求。"""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "0")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.end_headers()
 
     def do_POST(self):
         raw = self._read_body()
         try:
             body = json.loads(raw) if raw else {}
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            # ASR 的 multipart/form-data 含二进制音频，不是 JSON，不能当请求体解析
             body = {}
         p = self.path.split("?")[0].rstrip("/")
+
+        # ★ 2026-11-08：NPU 旁路分流判定（默认关闭；被拒时显式 503，不回落到 8080）
+        try:
+            npu_base, is_npu = npu_route(self.headers, body, p)
+        except NpuRouteError as e:
+            self._send(503, {"error": "npu route rejected: %s" % e})
+            return
 
         # ★ 2026-10-03 修复：剥离孤儿 media 占位符，避免 mmproj tokenizer 400
         #   （纯文本请求残留 <__media_xxx__> 却未附图 → 上游 tokenize 失败）。
@@ -629,7 +766,7 @@ class Handler(BaseHTTPRequestHandler):
                             raw = json.dumps(body).encode()
 
             # 注入默认关闭思考链（客户端显式指定时不覆盖）
-            if INJECT_NO_THINK and isinstance(body, dict) and raw:
+            if INJECT_NO_THINK and not is_npu and isinstance(body, dict) and raw:
                 ctk = body.get("chat_template_kwargs")
                 if not isinstance(ctk, dict):
                     ctk = {}
@@ -639,17 +776,29 @@ class Handler(BaseHTTPRequestHandler):
                     raw = json.dumps(body).encode()
 
             # disclosure 模式 + 非流式 → 渐进式披露工具循环
-            if PROXY_MODE == "disclosure" and not body.get("stream"):
+            if PROXY_MODE == "disclosure" and not is_npu and not body.get("stream"):
                 try:
                     self._send(200, handle_chat(body))
                 except Exception as e:
                     self._send(500, {"error": str(e)})
             else:
                 # passthrough 模式，或 disclosure 下的流式请求 → 原样透传（含 SSE）
+                if is_npu and isinstance(body, dict):
+                    # flm 按 model 字段定位/热切换模型；主模型别名会触发一次昂贵换模
+                    # 或直接报「找不到模型」，故统一改写成 NPU 侧标签。
+                    if str(body.get("model") or "").lower() not in NPU_MODEL_ALIASES:
+                        body["model"] = NPU_MODEL_TAG
+                        raw = json.dumps(body).encode()
                 forward_to_upstream(self,"POST", "/v1/chat/completions", raw,
-                                        stream=bool(body.get("stream")))
+                                        stream=bool(body.get("stream")),
+                                        base_url=npu_base)
         elif p.startswith("/v1/") or p in ("/embeddings", "/completions"):
-            forward_to_upstream(self,"POST", self.path.split("?")[0], raw)
+            ctype = None
+            if is_npu:
+                # ASR 是 multipart/form-data，必须把含 boundary 的原 Content-Type 带给 flm
+                ctype = self.headers.get("Content-Type") or "application/json"
+            forward_to_upstream(self,"POST", self.path.split("?")[0], raw,
+                                base_url=npu_base, content_type=ctype)
         else:
             self._send(404, {"error": "not found", "path": self.path})
 
@@ -695,3 +844,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# 许可：CC0-1.0，公共领域贡献，无任何限制。
