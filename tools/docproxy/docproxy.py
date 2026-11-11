@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# 许可：CC0-1.0，公共领域贡献，无任何限制。
 """渐进式披露（Progressive Disclosure）文档代理 + OpenAI 兼容透传。
 
 两种模式（环境变量 PROXY_MODE 控制，默认 passthrough）：
@@ -29,6 +30,7 @@
     图片:       仅元数据
 """
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -53,6 +55,15 @@ PROXY_MODE = os.environ.get("PROXY_MODE", "passthrough").lower()
 # 而 qwen4exp（Qwen3.8-Flash-Next）正好相反。所以统一用 chat_template_kwargs 这个字段。
 # 客户端若显式传了 enable_thinking，以客户端为准，不覆盖。
 INJECT_NO_THINK = os.environ.get("INJECT_NO_THINK", "1").lower() not in ("0", "false", "no")
+
+# ---- 请求快照（2026-11-11 新增，服务于「定向预加载」取证）----
+# 目的：抓 WorkBuddy 真实请求的 system prompt / tools 指纹，统计跨请求的稳定公共前缀，
+#       从而判断「预加载头部」到底能省多少。DUMP_PROMPT=0 即完全关闭。
+# 落点：$DUMP_DIR/requests.jsonl（每次一行元数据）+ sys_<sha>.txt / tools_<sha>.json（每个新指纹存一份全文）
+# 隐私：system prompt 含记忆内容，目录 700、文件 600，仅本机可见。
+DUMP_PROMPT = os.environ.get("DUMP_PROMPT", "0").lower() not in ("0", "false", "no")
+DUMP_DIR = os.environ.get("DUMP_DIR", os.path.expanduser("~/.cache/docproxy_prompt_dump"))
+DUMP_MAX_BAGS = int(os.environ.get("DUMP_MAX_BAGS", "400"))
 
 # 上游单次请求总超时（秒）。2026-10-02 修复：原值 1800 太长，
 # 上游卡死时客户端要干等 30 分钟才报错，改为 600 尽快失败让客户端重试。
@@ -597,6 +608,83 @@ def forward_to_upstream(self, method, path, raw=None, stream=False,
                 f"总耗时={time.time()-t0:.2f}s 字节={nbytes}\n")
 
 
+def _sys_text(content):
+    """把 system message 的 content 归一化为字符串（兼容纯文本与分段数组两种形态）。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out = []
+        for part in content:
+            if isinstance(part, dict):
+                out.append(str(part.get("text") or ""))
+            elif isinstance(part, str):
+                out.append(part)
+        return "".join(out)
+    return ""
+
+
+def _dump_prompt(body, path):
+    """记录一次 /v1/chat/completions 请求的 system / tools / messages 指纹。
+
+    只写指纹 + 每个新指纹的首份全文，避免日志膨胀；任何异常都吞掉，
+    绝不阻断转发主流程（取证优先于业务是错误的权衡）。
+    """
+    if not DUMP_PROMPT or not isinstance(body, dict):
+        return
+    try:
+        os.makedirs(DUMP_DIR, mode=0o755, exist_ok=True)
+        msgs = body.get("messages") or []
+        sys_c = ""
+        for m in msgs:
+            if isinstance(m, dict) and m.get("role") == "system":
+                sys_c = _sys_text(m.get("content"))
+                break
+        tools = body.get("tools") or []
+        tools_blob = json.dumps(tools, ensure_ascii=False, sort_keys=True)
+        msgs_blob = json.dumps(msgs, ensure_ascii=False, sort_keys=True)
+
+        sys_sha = hashlib.sha1(sys_c.encode()).hexdigest()[:16]
+        tools_sha = hashlib.sha1(tools_blob.encode()).hexdigest()[:16]
+        bag_sha = hashlib.sha1(msgs_blob.encode()).hexdigest()[:16]
+
+        rec = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "path": path,
+            "model": body.get("model"),
+            "stream": bool(body.get("stream")),
+            "n_msg": len(msgs),
+            "sys_chars": len(sys_c),
+            "sys_sha": sys_sha,
+            "tools_n": len(tools),
+            "tools_chars": len(tools_blob),
+            "tools_sha": tools_sha,
+            "msgs_chars": len(msgs_blob),
+            "bag_sha": bag_sha,
+            "sys_head": sys_c[:160].replace("\n", " "),
+        }
+        with open(os.path.join(DUMP_DIR, "requests.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+        for name, text in ((f"sys_{sys_sha}.txt", sys_c),
+                           (f"tools_{tools_sha}.json", tools_blob)):
+            fp = os.path.join(DUMP_DIR, name)
+            if text and not os.path.exists(fp):
+                with open(fp, "w", encoding="utf-8") as f:
+                    f.write(text)
+                os.chmod(fp, 0o644)
+
+        # 完整 messages 每份指纹只留一次，用于事后原样重放测 token 数
+        bag = os.path.join(DUMP_DIR, f"bag_{bag_sha}.json")
+        if not os.path.exists(bag) and len(os.listdir(DUMP_DIR)) < DUMP_MAX_BAGS * 3:
+            with open(bag, "w", encoding="utf-8") as f:
+                json.dump({"model": body.get("model"), "tools": tools, "messages": msgs},
+                          f, ensure_ascii=False)
+            os.chmod(bag, 0o644)
+    except Exception as e:
+        if LOG_REQUESTS:
+            sys.stderr.write(f"[docproxy] dump 失败: {e!r}\n")
+
+
 class Handler(BaseHTTPRequestHandler):
     # 关键：HTTP/1.1 才能正确使用 chunked / keep-alive 语义。
     # 保持 HTTP/1.0 时，流式响应若无长度字段，客户端只能靠 EOF 判定结束。
@@ -718,6 +806,7 @@ class Handler(BaseHTTPRequestHandler):
             raw = json.dumps(body).encode()
 
         if p in ("/v1/chat/completions", "/chat/completions"):
+            _dump_prompt(body, p)
             # ★ 2026-10-03 头部裁剪：支持 X-Trim-Prompt 头动态剔除系统提示中的低频信息
             #   支持的值：
             #     connectors — 移除连接器状态（~2000 字符）
@@ -844,5 +933,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# 许可：CC0-1.0，公共领域贡献，无任何限制。

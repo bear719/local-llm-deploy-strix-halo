@@ -82,7 +82,7 @@
 
 ```ini
 [Service]
-WorkingDirectory=/home/lc/drama-series-agent
+WorkingDirectory=$HOME/drama-series-agent
 TimeoutStartSec=300
 ExecStartPre=.../startup-delay.sh 60          # 仅开机 300s 内延迟，运行期崩溃不等
 

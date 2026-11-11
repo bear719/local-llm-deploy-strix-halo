@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 许可：CC0-1.0，公共领域贡献，无任何限制。
 # Qwen3.6-35B-A3B-Uncensored-Q4_K_P + MTP 草稿模型 启动脚本（MoE 高速档）
 #
 # 用法:
@@ -229,6 +230,14 @@ CMD=(
     -ngl 999 "${CTX_ARGS[@]}"
 )
 [[ -n $MMPROJ ]] && CMD+=(--mmproj "$MMPROJ")
+
+# ---- 汉化 WebUI（2026-11-11）----
+# 内嵌 UI 是英文且无 i18n；把汉化后的静态站点目录用 --path 挂载即可替换界面。
+# 目录由 tools/ui-zh/ 下的脚本生成（apply4.py），目录不存在时自动回退内嵌英文 UI。
+# 回滚：UI_PATH= （显式置空）重启，或直接删除 /home/<user>/llama-ui-zh。
+UI_PATH=${UI_PATH-/home/<user>/llama-ui-zh}
+[[ -n $UI_PATH && -d $UI_PATH ]] && CMD+=(--path "$UI_PATH")
+
 CMD+=(
     "${TUNING[@]}"
     "${REASONING[@]}"
@@ -246,5 +255,3 @@ else
     echo "已启动 PID $(cat "$PIDFILE")，模式=$MODE，日志 $LOG"
     echo "加载约 20~30 秒，用 '$0 status' 查看进度"
 fi
-
-# 许可：CC0-1.0，公共领域贡献，无任何限制。

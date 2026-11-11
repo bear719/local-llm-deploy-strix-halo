@@ -16,7 +16,7 @@ FILL = int(sys.argv[2]) if len(sys.argv) > 2 else 32768
 ROUNDS = int(sys.argv[3]) if len(sys.argv) > 3 else 3
 
 # 用可预测的散文填充，避免被 tokenizer 过度压缩
-SENTENCE = ("在消化内科的临床工作中，内镜治疗后的食管胃底静脉曲张管理需要综合评估患者的"
+SENTENCE = ("在消化科的临床工作中，内镜治疗后的食管胃底静脉曲张管理需要综合评估患者的"
             "肝功能分级、门静脉压力梯度以及既往出血史。每位患者的随访周期与用药方案"
             "都应当个体化制定。")
 # 估算：1 个中文字 ≈ 1 token（Qwen tokenizer 大致如此）

@@ -80,6 +80,8 @@
 │   ├── gguf_probe.py                    # 判定 PLE 布局后再定参数
 │   ├── bench-*.py  spec-grid*.sh        # 测速与投机解码网格
 │   ├── test-npu.py  test-sampling.py    # NPU 与采样验证
+│   ├── analyze_prompt_dump.py           # 请求快照分析：稳定公共前缀 token 数与预加载判定
+│   ├── kv_cache_probe.py                # 逐槽 KV / cache-ram 占用探针
 │   └── compare-quant-speed-v3.sh        # 量化档位对比
 └── scripts/
     └── switch-model.sh                  # 两档一键切换
@@ -94,7 +96,7 @@
 
 ## 每日自动同步
 
-仓库每天 23:30 扫描工作区新增/变更的经验文档与脚本，按模型归入对应目录，提交并推送到 `main` 与相关 `model/*` 分支。
+仓库每天 01:00 扫描工作区新增/变更的经验文档与脚本，按模型归入对应目录，提交并推送到 `main` 与相关 `model/*` 分支。
 导播台与短剧经验分别归入 `director-console/` 与 `drama/`，并同步到 `drama/director-console` 与 `drama/production` 两条分支。
 
 ## 近期同步（2026-11-07 ~ 11-09）：NPU 重定位、KV cache 落显存、ASR 纠错
@@ -144,6 +146,39 @@
 | `tools/apply-npu-route.py` / `verify-npu-route.py` | 应用侧 NPU 路由写入与验证 |
 | `tools/start-flm-npu.sh` | FLM NPU 三模型常驻启动脚本（须面板托管） |
 | `tools/docproxy/` | 渐进式披露代理（更新版：chunked 上传解码 + SSE 心跳修复） |
+
+## 近期同步（2026-11-10 ~ 11-11）：prompt 前缀复用定案、Gufo NPU 卖点证伪、Flash-Next 案例对账
+
+这一批是同一台机器上「长会话首请求到底慢在哪」的收尾实验，加上两份外部案例的逐条对账。
+
+### 一、prompt 前缀复用的最终判定（35B 运行时）
+
+| 文档 | 一句话结论 |
+|---|---|
+| `models/qwen3.6-35b-a3b-moe/2026-11-11-preload-v2-verdict.md` | 预加载 cron 是**负优化**并已停用：docproxy 是 passthrough，预热内容与真实请求 LCP=0，收益 0，代价是每分钟把用户槽踢一次 |
+| `models/qwen3.6-35b-a3b-moe/2026-11-11-prompt-version-drift.md` | tools 顺序与 `sort_keys` **对 token 无影响**（归一化在 `common/chat.cpp`）；真正的断点是 tools 集合/内容漂移 → 结论改为**多版本共存 + 一次 `--warm-all`** |
+
+三条可直接复用的数字（同机实测）：40K 稳定前缀冷 prefill **52.7 s**、槽内命中 **0.81 s**、cache-ram 恢复 **9.93 s**；覆盖一个 100K 活跃槽要 `prompt_save` **80.4 s**。
+
+### 二、外部案例对账（不采信二手转述）
+
+| 文档 | 一句话结论 |
+|---|---|
+| `docs/2026-11-11-gufo-npu-prefill-verdict.md` | 「GPU+NPU 分摊 prefill」在 `gufo serve llm` 里**结构上不可达**（offload 要求 `n_tokens % 4096 == 0`，server 分块永不满足），只有 `gufo bench` 能触发 |
+| `models/qwen3.8-flash-next-imatrix-v2/2026-11-11-douyin-case-verdict.md` | 视频里 40 t/s 的差距主因是 **PLE n-gram 表放 GTT 内存**而不是 `--ngram-on-disk` 逐 token 随机 pread（≈20–30× 放大） |
+
+### 三、当日运行快照
+
+`docs/2026-11-10-daily-report.md`、`docs/2026-11-11-daily-report.md` —— 端口/显存/命中率/异常项，以及当天的参数漂移核查结果。
+
+### 四、新增与更新工具
+
+| 工具 | 用途 |
+|---|---|
+| `tools/analyze_prompt_dump.py` | 读 docproxy 的 `DUMP_PROMPT` 快照，输出稳定公共前缀 token 数与「该不该预加载」的判定 |
+| `tools/kv_cache_probe.py` | 逐槽探 KV / cache-ram 占用与 `cache_n`，用于验收复用是否真的生效 |
+| `tools/preload_system_prompt.py`（v2） | 快照重放 + 严格槽守卫（槽忙或有真实会话一律跳过），**不挂 cron** |
+| `tools/docproxy/docproxy.py` | `DUMP_PROMPT=1` 请求取证；转义与错误路径修正 |
 
 ## 通用前置（必读）
 

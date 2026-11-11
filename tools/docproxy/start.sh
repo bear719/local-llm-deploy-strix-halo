@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 许可：CC0-1.0，公共领域贡献，无任何限制。
 # docproxy 启动脚本（供 MCSManager 通用实例 / systemd 使用）
 # 关键：前台阻塞运行，MCSManager 靠前台主进程判定实例存活，切勿后台化（nohup &）。
 set -u
@@ -29,6 +30,13 @@ NPU_MIN_MEMAVAIL_MIB="${NPU_MIN_MEMAVAIL_MIB-4096}"
 NPU_SIDECAR="${NPU_SIDECAR-1}"
 # ASR 文本拼音层纠错（确定性层，零额外延迟）；设为空串即关闭
 NPU_ASR_FIX="${NPU_ASR_FIX-1}"
+# 请求快照取证（2026-11-11）：把每个 /v1/chat/completions 的 system/tools 指纹
+# 落到 ~/.cache/docproxy_prompt_dump/，用于统计跨请求稳定公共前缀，判断「定向预加载」
+# 到底能省多少 token。设 DUMP_PROMPT=0 即完全关闭，零副作用。
+DUMP_PROMPT="${DUMP_PROMPT-1}"
+# 落点必须写死：面板以 root 拉起本脚本，expanduser("~") 会展开成 /root，
+# 导致 lc 看不到取证数据。固定到 lc 家目录，配合 0o755/0o644 权限位可读。
+DUMP_DIR="${DUMP_DIR-/home/<user>/.cache/docproxy_prompt_dump}"
 
 PY="/home/<user>/.workbuddy/binaries/python/envs/default/bin/python"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,6 +66,8 @@ export NPU_MODEL_TAG
 export NPU_MIN_MEMAVAIL_MIB
 export NPU_SIDECAR
 export NPU_ASR_FIX
+export DUMP_PROMPT
+export DUMP_DIR
 echo "[OK] 启动 docproxy :$PORT -> $UPSTREAM  mode=$PROXY_MODE"
 if [ -n "$NPU_UPSTREAM" ]; then
   echo "[OK] NPU 旁路已启用 -> $NPU_UPSTREAM  tag=$NPU_MODEL_TAG  mem水位=${NPU_MIN_MEMAVAIL_MIB}MiB"
@@ -66,5 +76,3 @@ else
   echo "[OK] NPU 旁路已关闭（NPU_UPSTREAM 为空），全部流量走 $UPSTREAM"
 fi
 exec "$PY" "$SCRIPT" serve --port "$PORT" --upstream "$UPSTREAM"
-
-# 许可：CC0-1.0，公共领域贡献，无任何限制。

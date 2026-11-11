@@ -33,7 +33,7 @@
 `$HOME/src/Breeze-TTS-2.cpp/build/breeze-cli`，模型 `breeze-tts-2-q8_0.gguf`）。
 它走 carve-out VRAM，不占 30.47 GiB 的 GTT，与 35B 主服务不冲突。
 
-测试集：**6 条消化内科病历文本 × 3 种音色 = 18 条**，共 146 字（归一化后）。
+测试集：**6 条消化科病历文本 × 3 种音色 = 18 条**，共 146 字（归一化后）。
 音色用 `--instruction` 模拟：
 
 | 音色 | instruction |
