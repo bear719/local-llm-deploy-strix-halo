@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.env
+
+# 运行时产物（docproxy / 各脚本本地生成）
+docindex.json
+*.log
+*.bak
+*.pid
