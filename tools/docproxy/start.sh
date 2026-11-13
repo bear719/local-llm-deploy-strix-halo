@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# 许可：CC0-1.0，公共领域贡献，无任何限制。
 # docproxy 启动脚本（供 MCSManager 通用实例 / systemd 使用）
 # 关键：前台阻塞运行，MCSManager 靠前台主进程判定实例存活，切勿后台化（nohup &）。
 set -u
@@ -20,7 +19,15 @@ INJECT_NO_THINK="${INJECT_NO_THINK:-1}"
 #   单横线只在「变量未设置」时取默认值；把 NPU_UPSTREAM 显式设为空串即可
 #   完整关闭分流，无需改代码、无需回滚补丁。
 NPU_UPSTREAM="${NPU_UPSTREAM-http://127.0.0.1:8219}"
-NPU_MODEL_TAG="${NPU_MODEL_TAG-lfm2.5-it:1.2b}"
+# ★ 2026-11-12 实测定稿：翻译走 hy-mt2-flash:1.8b（腾讯混元 MT 专用）
+#   5 例医学语料 5/5 合格（胃窦/硬化剂/血管活性/二级预防全对），
+#   合计 3.74s 比 GPU 35B 的 9.48s 快 2.54×、比 lfm2.5-1.2b 的 5.01s 还快。
+#   lfm2.5-it:1.2b 作翻译 5 例中 4 例临床级错误，已弃用；qwen3-it:4b 质量可用但仅 22 t/s。
+#   换回通用对话模型：改这里为 lfm2.5-it:1.2b 并同步面板 MODEL_TAG，两者必须一致。
+NPU_MODEL_TAG="${NPU_MODEL_TAG-hy-mt2-flash:1.8b}"
+# 别名白名单：客户端 model 填这些值即自动分流到 NPU，无需加头。
+# 只列「NPU 侧真实可服务」的模型，避免客户端把大模型名丢进来触发队列堵塞。
+NPU_MODEL_ALIASES="${NPU_MODEL_ALIASES-hy-mt2-flash:1.8b,lfm2.5-it:1.2b,qwen3-it:4b,embed-gemma:300m,whisper-v3:turbo}"
 # host RAM 水位线（MiB）：NPU 吃 30.47 GiB host RAM，与 Vulkan 的 96 GiB carve-out
 # 不是同一个池子。2026-10-08 实测 avail 掉到 494 MiB 时全局 OOM，故必须设闸门。
 NPU_MIN_MEMAVAIL_MIB="${NPU_MIN_MEMAVAIL_MIB-4096}"
@@ -63,6 +70,7 @@ export PROXY_MODE
 export INJECT_NO_THINK
 export NPU_UPSTREAM
 export NPU_MODEL_TAG
+export NPU_MODEL_ALIASES
 export NPU_MIN_MEMAVAIL_MIB
 export NPU_SIDECAR
 export NPU_ASR_FIX

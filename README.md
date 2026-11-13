@@ -76,6 +76,7 @@
 │   └── 05-quality-topics-vs-community.md# 五个质量专题的社区对比
 ├── tools/
 │   ├── docproxy/                        # 渐进式披露推理代理
+│   ├── ui-zh/                           # ★ llama.cpp WebUI 汉化流水线（整串替换 + UTF-16 切片）
 │   ├── openwebui/  sdcpp-video/         # 前端与视频生成启动脚本
 │   ├── gguf_probe.py                    # 判定 PLE 布局后再定参数
 │   ├── bench-*.py  spec-grid*.sh        # 测速与投机解码网格
@@ -179,6 +180,28 @@
 | `tools/kv_cache_probe.py` | 逐槽探 KV / cache-ram 占用与 `cache_n`，用于验收复用是否真的生效 |
 | `tools/preload_system_prompt.py`（v2） | 快照重放 + 严格槽守卫（槽忙或有真实会话一律跳过），**不挂 cron** |
 | `tools/docproxy/docproxy.py` | `DUMP_PROMPT=1` 请求取证；转义与错误路径修正 |
+
+## 近期同步（2026-11-12 ~ 11-13）：NPU 翻译模型定稿、WebUI 汉化流水线入库
+
+### 一、NPU 翻译任务改用专用 MT 小模型
+
+`hy-mt2-flash:1.8b` 在 5 例专业术语语料上 **5/5 合格、合计 3.74 s**；通用对话模型 `lfm2.5-it:1.2b` 只有 1/5（4 例术语意译成错），GPU 35B 质量同级但要 9.48 s。结论：翻译这类「术语映射」任务，**专用小模型 > 通用小模型 > 大模型**，且完全不占 VRAM。详见 `docs/03-npu-8219.md` 第八节，实现见 `tools/docproxy/start.sh`。
+
+### 二、llama.cpp WebUI 汉化流水线
+
+`tools/ui-zh/` 是 8080 内置 WebUI（SvelteKit 打包产物，无 i18n）的汉化工具链。核心不是「全文替换」，而是三条硬约束：
+
+| 约束 | 原因 |
+|---|---|
+| **只做整串替换 + 文本段替换，绝不子串替换** | 子串替换会把 `"Set the API Key if ..."` 换成中英混排，也会改坏 `GET/POST/Bearer/Enter/Tab` 这类兼作协议名/按键名的串 |
+| **切片必须按 `utf-16-le` 字节偏移** | acorn 的偏移是 UTF-16 码元，Python 字符下标与之不等价（bundle 含 emoji 代理对），按下标切会把 `console.error("No wrapper found")` 切成语法错误 |
+| **验证前清 Service Worker** | 否则浏览器一直吃旧缓存，看着像替换没生效 |
+
+`apply4.py` 是主构建脚本，`dict.json`（整串词表）+ `segments.json`（段级词表）为其输入。产物挂载用 `llama-server --path <目录>`，回滚 `UI_PATH=` 重启。
+
+### 三、当日运行快照
+
+`docs/2026-11-12-daily-report.md`、`docs/2026-11-13-daily-report.md` —— 端口/显存/MTP 接受率/参数漂移核查，以及 minimax-h3 专项逐条结论。
 
 ## 通用前置（必读）
 

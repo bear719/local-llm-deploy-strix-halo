@@ -1,0 +1,11 @@
+{
+ "Allow use of": "允许使用",
+ "Set the API Key if you are using": "如果服务器使用了",
+ "option for the server.": " 选项，请设置 API 密钥。",
+ "Waiting for runtime info...": "正在等待运行时信息…",
+ "flag to enable": "标志以启用",
+ "will be sent to the model.": "将发送给模型。",
+ "or height:": "或高度：",
+ "is not a valid": "不是有效的",
+ "flag. To see MCP Tools you need to add / enable MCP Server(s).": " 标志。要查看 MCP 工具，需要添加/启用 MCP 服务器。"
+}
