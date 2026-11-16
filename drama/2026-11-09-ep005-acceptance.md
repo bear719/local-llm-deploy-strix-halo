@@ -3,7 +3,7 @@
 - **结论：有风险，可放行**（评分 68 / 100）
 - 验收单号：`pf_20261109_155924`
 - 分镜指纹：`195caad99e4c8931`（分镜一改即失效）
-- 项目：`$HOME/drama-series-agent/projects/凡人修仙传`
+- 项目：`$HOME/drama-series-agent/projects/<作品>`
 - 检查结果：✅ 31 · ⚠️ 6 · ⛔ 0
 - 审查模型：`MiniMax-M3.1-Flash`
 - 关注点：E5 + stdin 修复后最终复验（经验表补齐 L29/L30）
@@ -17,41 +17,41 @@
 | 关键帧数 | `21` |
 | 剧本字数 | `4942` |
 | 预估出片时长 | `约 9.5 小时（569 分钟）` |
-| 角色 | `墨大夫, 韩立` |
+| 角色 | `<角色A>, <角色B>` |
 
 ## 二、逐项检查
 
 | 项 | 结果 | 说明 | 证据 |
 |---|---|---|---|
-| 分镜 jsonl | ✅ | 21 镜（期望 21） | `$HOME/drama-series-agent/templates/凡人修仙传/run/EP005.episode-run.jsonl` |
-| 剧本文件 | ✅ | 4942 字，含场景与对白标记 | `$HOME/drama-series-agent/templates/凡人修仙传/剧集/EP005/screenplay.md` |
+| 分镜 jsonl | ✅ | 21 镜（期望 21） | `$HOME/drama-series-agent/templates/<作品>/run/EP005.episode-run.jsonl` |
+| 剧本文件 | ✅ | 4942 字，含场景与对白标记 | `$HOME/drama-series-agent/templates/<作品>/剧集/EP005/screenplay.md` |
 | 镜头时长 | ✅ | 合计 155.98s，21 镜 | `duration_seconds 求和` |
 | 关键帧 | ✅ | 21 张齐备（15.8MB） | `assets/keyframes/*.png` |
-| 角色参考图 | ✅ | 2 个角色均有已验收参考图（来源：分镜 ref_characters） | `$HOME/drama-series-agent/data/cast/凡人修仙传` |
+| 角色参考图 | ✅ | 2 个角色均有已验收参考图（来源：分镜 ref_characters） | `$HOME/drama-series-agent/data/cast/<作品>` |
 | 参考图张数 | ✅ | 21 镜均 ≤ 4 张（最多 SHOT-004=3） | `首帧关键帧 + 角色锚图` |
-| 声线参考 | ✅ | 2 个声线齐备 | `$HOME/drama-series-agent/data/cast/凡人修仙传/voices` |
+| 声线参考 | ✅ | 2 个声线齐备 | `$HOME/drama-series-agent/data/cast/<作品>/voices` |
 | 视频提示词 | ✅ | 21 镜结构完整，平均 1371 字 | `video_prompt` |
 | 渲染参数 | ✅ | 工作流 video_minimax_h3_r2v_fast.json，steps=12，并发=1 | `config.json → render` |
 | S1 门禁 | ⚠️ | 文学/角色已验收，音频 missing（原生音轨模式下可接受） | `series_runtime.json → s1_gate.audio_status` |
-| 响度一致性 | ✅ | 21 镜逐镜 RMS 极差 2.30 dB（最低 SHOT-008 -28.7 dBFS，最高 SHOT-011 -26.4 dBFS） | `$HOME/drama-series-agent/templates/凡人修仙传/output/EP005/shots` |
+| 响度一致性 | ✅ | 21 镜逐镜 RMS 极差 2.30 dB（最低 SHOT-008 -28.7 dBFS，最高 SHOT-011 -26.4 dBFS） | `$HOME/drama-series-agent/templates/<作品>/output/EP005/shots` |
 | 磁盘余量 | ✅ | 可用 237.1GB，本集预估需 4.5GB | `$HOME/drama-series-agent` |
 | 推理服务 | ✅ | llama-server:8080、docproxy:18090 正常 | `/health 探活` |
 | 历史基线 | ✅ | 历史 266 条镜头状态，失败 8 条（3.0%），完成间隔中位数 1034.8s | `run/*.status.jsonl` |
-| 画外音占比 | ⚠️ | 19/21 镜画外音（90.5%）；3 镜双人同框配 VO：SHOT-004, SHOT-013, SHOT-019；接近配图有声书（EP005 为 90.5%），属剧本创作决策但开片前需确认，且字幕标签口径要同步（--vo-label） | `$HOME/drama-series-agent/templates/凡人修仙传/run/EP005.episode-run.jsonl → voice_offscreen (L24)` |
-| 长镜原生音频 | ⚠️ | 4 镜 >10s 且带台词走 H3 原生音频（SHOT-001=15.1s, SHOT-004=15.0s, SHOT-014=15.1s, SHOT-017=15.0s）；实证提示词修不了长时长续写/复读，开片前须先定音频路线（短句拼接或字幕承载），别等 21 镜 ASR 才返工 | `$HOME/drama-series-agent/templates/凡人修仙传/run/EP005.episode-run.jsonl → duration_seconds/audio_mode/dialogue (L17,L18)` |
-| 台词三件套 | ⚠️ | 2/6 个 >8s 长台词镜缺收尾/节奏约束：SHOT-009缺起说≤0.5s/念完立刻安静；SHOT-019缺起说≤0.5s/念完立刻安静 | `$HOME/drama-series-agent/templates/凡人修仙传/run/EP005.episode-run.jsonl → video_prompt / duration_seconds (L17)` |
-| 提示词互斥冲突 | ✅ | 扫描 42 处提示词，未发现脸/交接互斥词对 | `$HOME/drama-series-agent/templates/凡人修仙传/run/EP005.episode-run.jsonl + $HOME/drama-series-agent/templates/凡人修仙传/assets/keyframes/EP005.manifest.jsonl (L23)` |
-| 锁脸参考图 | ✅ | 纯手部/无脸镜均未挂参考图（或本集无此类镜） | `$HOME/drama-series-agent/templates/凡人修仙传/assets/keyframes/EP005.manifest.jsonl → image_prompt / kf_* (L25)` |
-| 渲染路线与音色锚 | ⚠️ | 5 镜无画面角色但需音色锚（SHOT-002, SHOT-005, SHOT-012, SHOT-015, SHOT-018）；runner._resolve_render_route 判据 4 要求「单段有画面角色 → A 路」，这类镜可能落 B 路 I2VA，而 B 路与 --ref-audio 硬互斥，日志不报错但成片换嗓。若渲染链已 export DRAMA_H3_FORCE_ROUTE=ref 且用 ps 实测 --ref-audio 存在，则本项可忽略；否则开片前先补上（L26） | `$HOME/drama-series-agent/templates/凡人修仙传/run/EP005.episode-run.jsonl → ref_characters/ref_voices (L26)` |
-| 关键帧重出时效 | ✅ | 与基线 EP005.manifest.jsonl 逐行比对：1 镜提示词改动，关键帧均已重出（SHOT-012） | `$HOME/drama-series-agent/templates/凡人修仙传/assets/keyframes/EP005.manifest.jsonl 逐行 vs EP005.manifest.jsonl (L23,L27)` |
-| 渲染产物新鲜度 | ✅ | 21 镜产物与当前分镜指纹一致（render_sig 未变、done 全真） | `$HOME/drama-series-agent/templates/凡人修仙传/output/EP005/.shot-fingerprints.json → render_guard.shot_fingerprint 重算 (L22,L27)` |
+| 画外音占比 | ⚠️ | 19/21 镜画外音（90.5%）；3 镜双人同框配 VO：SHOT-004, SHOT-013, SHOT-019；接近配图有声书（EP005 为 90.5%），属剧本创作决策但开片前需确认，且字幕标签口径要同步（--vo-label） | `$HOME/drama-series-agent/templates/<作品>/run/EP005.episode-run.jsonl → voice_offscreen (L24)` |
+| 长镜原生音频 | ⚠️ | 4 镜 >10s 且带台词走 H3 原生音频（SHOT-001=15.1s, SHOT-004=15.0s, SHOT-014=15.1s, SHOT-017=15.0s）；实证提示词修不了长时长续写/复读，开片前须先定音频路线（短句拼接或字幕承载），别等 21 镜 ASR 才返工 | `$HOME/drama-series-agent/templates/<作品>/run/EP005.episode-run.jsonl → duration_seconds/audio_mode/dialogue (L17,L18)` |
+| 台词三件套 | ⚠️ | 2/6 个 >8s 长台词镜缺收尾/节奏约束：SHOT-009缺起说≤0.5s/念完立刻安静；SHOT-019缺起说≤0.5s/念完立刻安静 | `$HOME/drama-series-agent/templates/<作品>/run/EP005.episode-run.jsonl → video_prompt / duration_seconds (L17)` |
+| 提示词互斥冲突 | ✅ | 扫描 42 处提示词，未发现脸/交接互斥词对 | `$HOME/drama-series-agent/templates/<作品>/run/EP005.episode-run.jsonl + $HOME/drama-series-agent/templates/<作品>/assets/keyframes/EP005.manifest.jsonl (L23)` |
+| 锁脸参考图 | ✅ | 纯手部/无脸镜均未挂参考图（或本集无此类镜） | `$HOME/drama-series-agent/templates/<作品>/assets/keyframes/EP005.manifest.jsonl → image_prompt / kf_* (L25)` |
+| 渲染路线与音色锚 | ⚠️ | 5 镜无画面角色但需音色锚（SHOT-002, SHOT-005, SHOT-012, SHOT-015, SHOT-018）；runner._resolve_render_route 判据 4 要求「单段有画面角色 → A 路」，这类镜可能落 B 路 I2VA，而 B 路与 --ref-audio 硬互斥，日志不报错但成片换嗓。若渲染链已 export DRAMA_H3_FORCE_ROUTE=ref 且用 ps 实测 --ref-audio 存在，则本项可忽略；否则开片前先补上（L26） | `$HOME/drama-series-agent/templates/<作品>/run/EP005.episode-run.jsonl → ref_characters/ref_voices (L26)` |
+| 关键帧重出时效 | ✅ | 与基线 EP005.manifest.jsonl 逐行比对：1 镜提示词改动，关键帧均已重出（SHOT-012） | `$HOME/drama-series-agent/templates/<作品>/assets/keyframes/EP005.manifest.jsonl 逐行 vs EP005.manifest.jsonl (L23,L27)` |
+| 渲染产物新鲜度 | ✅ | 21 镜产物与当前分镜指纹一致（render_sig 未变、done 全真） | `$HOME/drama-series-agent/templates/<作品>/output/EP005/.shot-fingerprints.json → render_guard.shot_fingerprint 重算 (L22,L27)` |
 | 关键帧指纹路径 | ✅ | 实证 21 镜指纹随 <EP>/ 关键帧变化，按集取图已生效；根目录仍遗留 21 张同名旧图（SHOT-001, SHOT-002, SHOT-003…），不影响 sig，建议后续清理避免歧义 | `assets/keyframes/<SHOT>.png vs assets/keyframes/EP005/<SHOT>.png → render_guard.shot_fingerprint 实证 (E5)` |
 | 实测段与批量集同构 | ✅ | 首行 prompt sha1 同为 cca682edb1aa（1343 字），实测段与批量集同构 | `EP005PROBE.episode-run.jsonl vs EP005AUD.episode-run.jsonl 首行 video_prompt sha1 (L22)` |
-| 交付件链完整性 | ✅ | 交付链齐备，EP005_成片.mp4 与 master.final.mp4 同 inode；交付件语义：master.mp4 裸母版 → master.sub.mp4 烧字幕 → master.final.mp4 混 BGM | `$HOME/drama-series-agent/templates/凡人修仙传/output/EP005 → master.mp4 / .sub / .final / .srt / .ass / *_成片.mp4 (L16,L24)` |
-| 字幕时间轴 | ✅ | 21 条字幕，末条 end 157.40s / 成片 158.56s，零越界 | `$HOME/drama-series-agent/templates/凡人修仙传/output/EP005/EP005.srt vs master.final.mp4 Duration (L24)` |
+| 交付件链完整性 | ✅ | 交付链齐备，EP005_成片.mp4 与 master.final.mp4 同 inode；交付件语义：master.mp4 裸母版 → master.sub.mp4 烧字幕 → master.final.mp4 混 BGM | `$HOME/drama-series-agent/templates/<作品>/output/EP005 → master.mp4 / .sub / .final / .srt / .ass / *_成片.mp4 (L16,L24)` |
+| 字幕时间轴 | ✅ | 21 条字幕，末条 end 157.40s / 成片 158.56s，零越界 | `$HOME/drama-series-agent/templates/<作品>/output/EP005/EP005.srt vs master.final.mp4 Duration (L24)` |
 | 历史 ASR 遗留 | ⚠️ | 最近报告 fix_ep005_asr_after.json：命中 <90% 4 镜（SHOT-001=81.2%, SHOT-009=2.9%, SHOT-014=61.2%, SHOT-017=84.1%）；续写（asr/ref >1.15）1 镜（SHOT-009=1.43x）；开片前确认这些遗留是否已修复，命中率 100% 也要看 asr_chars 比值 | `$HOME/drama-series-agent/logs/fix_ep005_asr_after.json → hit_rate / asr_chars:ref_chars (L17,L21)` |
 | BGM 电平 | ✅ | 目标 -32.0 dBFS，在可听区间（≥ -35） | `$HOME/drama-series-agent/scripts/gen_bgm.py → TARGET_BGM_RMS_DBFS (E1)` |
-| 字幕标签口径 | ✅ | SRT 含「画外音」0 处，收尾脚本口径 none，一致 | `$HOME/drama-series-agent/templates/凡人修仙传/output/EP005/EP005.srt + finalize_ep005.sh → --vo-label (L24)` |
+| 字幕标签口径 | ✅ | SRT 含「画外音」0 处，收尾脚本口径 none，一致 | `$HOME/drama-series-agent/templates/<作品>/output/EP005/EP005.srt + finalize_ep005.sh → --vo-label (L24)` |
 | 脚本 stdin 安全 | ✅ | 43 处 ffmpeg/ffprobe 调用均带 stdin 防护，heredoc 无 </dev/null 覆盖 | `scripts/*.py + src/**/*.py 的 subprocess 调用；scripts/*.sh 的 heredoc (L19,L28)` |
 | Shell 脚本隐患 | ✅ | 未发现 pkill -f 自匹配与 sudo 提权行 | `scripts/*.sh 静态扫描 (L4,L7,L8,L10)` |
 | 模型名可识别 | ✅ | vendor=Custom、model=MiniMax-M3.1-Flash、云端模型无需注入 enable_thinking=False，判定链实证通过 | `load_llm_settings → detect_vendor / prepare_request_kwargs (L6) \| https://api.iamhc.cn/v1` |
@@ -79,16 +79,16 @@
 把下面整段贴进 WorkBuddy 会话，它会读原始文件做逐镜复核并直接改代码/资源：
 
 ```text
-读取 $HOME/drama-series-agent/docs/acceptance/20261109-160154-EP005-acceptance.md 与 $HOME/drama-series-agent/templates/凡人修仙传/run/EP005.episode-run.jsonl，
+读取 $HOME/drama-series-agent/docs/acceptance/20261109-160154-EP005-acceptance.md 与 $HOME/drama-series-agent/templates/<作品>/run/EP005.episode-run.jsonl，
 对 EP005 做开片前深度验收：逐镜检查 video_prompt 与关键帧是否匹配、角色是否串味、
 字幕/时长节奏是否合理；修复后重新跑一次验收，通过再开拍。
 ```
 
 ## 六、证据路径
 
-- 分镜：`$HOME/drama-series-agent/templates/凡人修仙传/run/EP005.episode-run.jsonl`
-- 关键帧：`$HOME/drama-series-agent/templates/凡人修仙传/assets/keyframes/`
-- 剧本：`$HOME/drama-series-agent/templates/凡人修仙传/剧集/EP005/screenplay.md`
+- 分镜：`$HOME/drama-series-agent/templates/<作品>/run/EP005.episode-run.jsonl`
+- 关键帧：`$HOME/drama-series-agent/templates/<作品>/assets/keyframes/`
+- 剧本：`$HOME/drama-series-agent/templates/<作品>/剧集/EP005/screenplay.md`
 - 采集快照：`$HOME/drama-series-agent/run/preflight/pf_20261109_155924/raw.json`
 
 ## 七、经验库覆盖（已知正向经验 / 坑）
