@@ -248,6 +248,52 @@ MTP 是否生效只认 `ps` + `/metrics`；且**累计接受率跨重启不可�
 详见 `docs/2026-11-14-daily-report.md`、`docs/2026-11-15-daily-report.md`、`docs/2026-11-16-daily-report.md`、
 `drama/2026-11-15-ep006-acceptance.md`。
 
+## 近期同步（2026-11-17 ~ 11-18）：decode 基线恢复 82.5 t/s、huge pages 候选、MTP 判据
+
+两篇快照：`docs/2026-11-17-daily-report.md`、`docs/2026-11-18-daily-report.md`。
+
+### 一、怎么证明 MTP 真的在跑（`/props` 在说谎）
+
+`/props` 的 `params.speculative.types` 返回 `"none"` 时，MTP 可能正在满速工作 —— 这是 fork 的已知不可信字段。
+**只查它必然得出错误结论。** 可信判据是三条并列：
+
+| 判据 | 期望 |
+|---|---|
+| `/slots[0].speculative` 与 `params."speculative.types"` | `true` / `none,draft-mtp` |
+| `ps` 命令行 | 含 `--spec-type draft-mtp --spec-draft-n-max N -md ...MTP-ONLY...gguf` |
+| `/metrics` 的 `spec_decode_num_draft_tokens_total` / `_accepted_tokens_total` | 计数器在增长（非静态回显） |
+
+第三条还能顺带算出接受率。注意**累计值跨重启归零**，别把归零当性能回归。
+
+### 二、基线恢复：82.50 t/s，但 prefill 仍空着
+
+11-15 的 17.28 t/s 是并发渲染污染、11-16 是离线，两天的数据都已作废。
+本轮空闲态实测 **82.50 t/s**（Q5_K_P + MTP n=2，接受率 81.11%），这条才是当前可引用基线。
+
+**prefill 不要引用 89 t/s** —— 那是 `prompt_n=5` 的短样本，没有 pp512 意义。标准复核要 `llama-bench -p 512`。
+
+测速纪律：发布任何 decode 数字前先 `pgrep -c sd-cli`，非 0 则整组作废；且 prefill 在争用下会"显得更快"。
+
+### 三、`GLIBC_TUNABLES=glibc.malloc.hugetlb=1`：本机唯一零成本的提速候选
+
+社区实测（H100 +21% RPS / 首 token +22%；L4 +6.5%；8B plain chat 无增益），机制是 malloc 走 hugetlb、把页错误从 ~124,000 降到 ~1,850 次/请求。
+本机前置已满足：glibc 2.43 + THP=`madvise`。验证生效：`grep AnonHugePages /proc/$(pidof -s llama-server)/smaps_rollup` 应 > 0。
+
+**必须 A/B**：预热 2 次丢弃 → 加/不加交错各 3 轮 → 读 `timings.predicted_per_second`。分组跑会被温升污染。
+
+### 四、「MoE 投机陷阱」不适用于内嵌 MTP
+
+社区流传的「35B-A3B 加 speculative 反而 -60%」针对的是**独立 1.5B draft 模型**（另一套权重、另一份内存，verify 会触发全部专家加载）。
+本机是 **MTP heads 内嵌主模型**，`-md` 只是 heads 头，实测 82.50 t/s。**机制不同，结论不可套用**。
+真正的风险在另一侧（#27950）：采样器与 drafter 不对齐时接受率会从 59.6% 掉到 45.7% 且墙钟慢 2.8× —— **接受率高 ≠ 质量无损**，改 `n-max` 必须人工比对输出。
+
+社区 n-max 曲线（M2 Ultra / Metal）：n=2 → 73.04 t/s(86.2%)、n=3 → 76.00(78.3%)、n=4 → 77.68(76.7%)、n=5 → 74.68(68.0%)。拐点在 3~4，且 MTP 会让 prefill 掉约 17%。
+
+### 五、导播台侧：无新增漂移，仍是老账
+
+`config.json` 自 11-12 未变。唯一实质变化是 B1 关注点闭环（8080 恢复在线，应用链路可用）。
+未决项照旧：`steps 12` 低于共识、画布 800×448 非竖屏、`comfyui_url` 指向无监听的 8188、`--host 0.0.0.0` 未收窄。
+
 ## 通用前置（必读）
 
 - `VK_ICD_FILENAMES` 必须指向真实存在的 ICD 文件，否则 Vulkan 枚举不到设备 → 静默退化 CPU 推理（速度掉 2 倍+ 且不报错）。
