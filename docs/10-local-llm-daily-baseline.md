@@ -27,12 +27,12 @@
 |---|---|---|
 | 模型 | `Qwen3.6-35B-A3B-Uncensored-Q5_K_P.gguf`（Q5_K_M，28 GB，34.66B 参数，MoE 激活 ≈3B） | `/props` + `ps` |
 | `n_ctx` / `n_ctx_train` | 262144 / 262144（全量，未截断） | `default_generation_settings` |
-| 并发槽位 | `total_slots = 2` | `/slots` |
+| 并发槽位 | `total_slots = 1`（`-np 1`；早期快照曾为 2） | `/props` |
 | 模态 | text + vision + video（mmproj f16） | `/props` |
 | 投机解码 | `draft-mtp`，`--spec-draft-n-max 2`，MTP head 为 `Q4_K_M` | `/slots[0].params.speculative.types` + `ps` + `/metrics` 三处交叉验证 |
 | KV 精度 | `-ctk/-ctv q8_0` | `ps` |
-| decode 实测 | **72.41 t/s**（256 token，temp 0.6） | 本机实测 |
-| MTP 接受率 | 77.1%（前一日 85.8%，有回落） | `/metrics` |
+| decode 实测 | **82.50 t/s**（2026-11-18，`n_predict=64`、temp 0、空闲态；历史值 72.41 为 11-04 temp0.6/256 token，口径不同不可直接比） | 本机实测，`timings.predicted_per_second` |
+| MTP 接受率 | 81.11%（累计 485,287/393,621；跨重启归零，仅同日可比） | `/metrics` |
 | 二进制 | b10824-75147a27e | 本机 |
 | 监听地址 | `0.0.0.0`（连续 40+ 日未收窄） | `ps` |
 
@@ -67,12 +67,12 @@
 
 | 维度 | 本机现状 | 社区同硬件参考 | 差距 / 动作 |
 |---|---|---|---|
-| decode（35B-A3B MoE） | 72.41 t/s（MTP n=2） | MoE 专家缓存开启 + MTP n=3 可再提；缓存默认 OFF 时吞吐近减半 | 未开 `--moe-cache-mib`、n-max 偏低 |
-| prefill | 169 t/s | gufo / 特定量化可到 ~1261 t/s；另有 HIP MoE prefill 回退 15–50% 的上游 issue | 本机 prefill 是短板，评估引擎而非只调参 |
+| decode（35B-A3B MoE） | **82.50 t/s**（2026-11-18，MTP n=2） | 同模型 UD-Q4 MTP n=4 约 77.7 t/s（Metal）；n=3–4 仍在拐点区 | 已第一梯队；`--moe-cache-mib` 在 `-ngl 999` 下被自动禁用，**该候选作废**；n-max 3→4 或有 +3~6%（需质量人核） |
+| prefill | 短样本 89（无效）；历史 `/metrics` avg 约 365 | pp512 414（27B Q4）；pp8192 1409（30B-A3B） | **本机短板**，标准复核须 `llama-bench -p 512`；勿引用短样本数字 |
 | 上下文 | 262144 全量 | 社区多默认 128k 规避长 prefill | 一致 |
 | KV cache | q8_0 | 上游有 Vulkan Q4_0 KV fast path（未合并进本机 build） | 可 cherry-pick |
-| MTP 加速 | n-max 2，接受率 77.1% | n=3–5 可达 2.3–3.1×，但**采样器必须与 drafter 对齐** | 提 n-max 后需 A/B 质量人核 |
-| 上游版本 | b10824 | 当日上游 HEAD 已领先约 1300 个 build | 含多个 MTP / ReBAR 性能 PR |
+| MTP 加速 | n-max 2，接受率 81.11%（11-18） | n=2→73.0 / n=3→76.0 / n=4→77.7 / n=5→74.7 t/s（M2 Ultra 同模型）；**采样器必须与 drafter 对齐**，否则接受率 59.6%→45.7% 且墙钟慢 2.8× | 提 n-max 后需 A/B 质量人核 |
+| 上游版本 | b10824（11-18 落后 **1659** build） | b12483（2026-11-17 20:05Z） | 升级有 ABI 破坏（废弃函数删除 / NextN 头迁移 / RPC v9），先备 mesa deb |
 | 驱动栈 | Mesa 26.0.8 **钉死 + apt-mark hold** | 新版本可用但曾致 Vulkan 全崩 | 稳定性优先，刻意不跟 |
 | 出片 steps | 12 | 20–30 | 回滚 20 |
 
@@ -83,7 +83,16 @@
 ### 改启动参数即可（经面板重启实例，禁止裸跑二进制）
 
 ```bash
-# MTP draft 数从 2 提到 3（社区有翻倍案例，但接受率须重新测 + 质量人核）
+# 【P0，2026-11-18 新增】让 glibc malloc 走 huge pages：零代码、零 root、无需改任何 llama flag
+#   前置：glibc >= 2.35（本机 2.43 ✅）、THP 含 madvise（本机 `always [madvise] never` ✅）
+GLIBC_TUNABLES=glibc.malloc.hugetlb=1 <原启动命令，参数不变>
+#   验证生效（非 0 才算生效）：
+grep AnonHugePages /proc/$(pidof -s llama-server)/smaps_rollup
+#   他人实测：H100 tool-calling +21% RPS / 首 token +22%；L4 +6.5%；8B plain chat 无增益；
+#   页错误 ~124,000 → ~1,850 次/请求。收益与 GPU 速度正相关，本机 82.5 t/s 档预计中等。
+#   ⚠️ 必须交错 A/B（预热 2 次丢弃 → 加/不加各 3 轮交替），分组跑会被温升污染。
+
+# MTP draft 数从 2 提到 3（社区 n=3 拐点，但接受率 86%→78%、PP 掉约 17% + 质量人核）
 --spec-draft-n-max 3
 
 # 收窄监听地址（长期 0.0.0.0 属暴露面）
@@ -139,6 +148,7 @@ cd $HOME/llama-qwen4exp-rocmfpx && git pull && cmake --build build-vk4 --target 
 | 自动 fit 会误分配 | llama.cpp 自动 fit 在超大模型上会误分配导致 OOM，须 `-fit off` | 加载 Flash-Next 类超大模型时必填 |
 | 同硬件 27B Vulkan 横评 | Q4_K_M 16.8 / Q6_K 14.2 / Q8_0 11.3 t/s | 仅作旁证，与 MoE 35B-A3B 不可比 |
 | 低可信度内容 | 有文称 176B 模型 BF16 仅 8.6 GB，与体量严重矛盾 | `[UNVERIFIED]`，只采信其中可独立验证的部分（如「Vulkan 后端须自行编译」） |
+| 「MoE 投机陷阱」-60% | 35B-A3B UD-Q4 无 draft 43.1 t/s，加 1.5B **独立 draft 模型**降到 17.5 t/s，归因「专家加载税」 | **不适用于内嵌 MTP**：本机 draft 是主模型自带的 MTP heads（`-md` 只加载 heads），实测 82.5 t/s。该文的结论边界是「独立 draft 模型 + 专家模型」组合，**不要拿来否定 MTP** |
 
 > 通用纪律：任何外部速度数字先核对**模型量级、量化格式、窗口长度、后端**四要素，缺一项不得直接与本站基线比较。
 
