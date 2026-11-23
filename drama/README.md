@@ -20,6 +20,9 @@
 | [03-dialogue-timing-model.md](03-dialogue-timing-model.md) | 台词时长安全模型：语速重标定、尾部余量、填充率上下限、串音抑制 |
 | [04-segment-repetition-and-seed.md](04-segment-repetition-and-seed.md) | 单镜内分段重演：MAD 判重法、种子默认 42 的陷阱、三条路线取舍 |
 | [05-quality-topics-vs-community.md](05-quality-topics-vs-community.md) | 五个质量专题的社区对比：什么值得抄、什么纯属浪费 |
+| [2026-11-15-ep006-acceptance.md](2026-11-15-ep006-acceptance.md) | 开片验收单实测：长镜丢字规律、路线与音色锚互斥、检查项清单 |
+| [2026-11-22-ep007-acceptance.md](2026-11-22-ep007-acceptance.md) | 同日三次重跑的评分口径（分数降≠质量降）、关键帧根目录残留盲区、37 条经验编译成检查项 |
+| [2026-11-22-pipeline-optimize-report.md](2026-11-22-pipeline-optimize-report.md) | 出片流程自检：固定采集字段、本地模型做诊断的边界、4 条建议里 1 条必须人工否决 |
 
 ---
 
