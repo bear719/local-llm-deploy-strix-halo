@@ -244,6 +244,21 @@ CMD+=(
     --metrics --host 0.0.0.0 --port "$PORT"
 )
 
+# ---- 上游鉴权（2026-11-23）----
+# 背景：8080 经 frp 映射到公网（<公网服务器IP>:8080）且原先无任何认证，
+#       日志已见 Nmap / HNAP1 扫描。加 --api-key-file 后，无 key 一律 401。
+# 设计：key 存文件（默认 /home/<user>/.llama-api-key，600），轮换只改文件 + 重启，
+#       不把密钥写进脚本或面板启动参数。文件缺失则跳过（保持旧的无鉴权行为），
+#       避免误删文件导致服务起不来。
+# 客户端影响：docproxy(18090) / anthropic-fix-proxy(8099) 已改为代理侧自动补
+#       Authorization: Bearer，客户端无需感知；直连 8080 的脚本必须自带该头。
+API_KEY_FILE=${API_KEY_FILE-/home/<user>/.llama-api-key}
+if [[ -f $API_KEY_FILE ]]; then
+    CMD+=(--api-key-file "$API_KEY_FILE")
+else
+    echo "[WARN] 未找到密钥文件 $API_KEY_FILE → 以无鉴权模式启动（公网暴露风险）"
+fi
+
 if (( FOREGROUND )); then
     echo "[INFO] 前台模式：日志直出，加载约 20~30 秒（25.9 GB，比 93 GB 的 imatrix-v2 快很多）"
     exec "${CMD[@]}"

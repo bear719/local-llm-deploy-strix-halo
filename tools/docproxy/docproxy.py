@@ -47,6 +47,27 @@ PY = sys.executable
 UPSTREAM = os.environ.get("UPSTREAM", "http://127.0.0.1:8080")
 PROXY_MODE = os.environ.get("PROXY_MODE", "passthrough").lower()
 
+# ---- 上游鉴权（2026-11-23）----
+# 背景：llama-server 已加 --api-key（堵公网 frp 暴露），所有经本代理的请求
+#       必须由代理侧补 Authorization，否则上游一律 401。
+# 设计：key 落文件而非写进面板启动参数 —— 轮换只改文件 + 重启代理，不动面板。
+#       优先级：环境变量 UPSTREAM_KEY > 文件 > 空（空则不加头，兼容旧无鉴权实例）。
+UPSTREAM_KEY_FILE = os.environ.get("UPSTREAM_KEY_FILE", "/home/<user>/.llama-api-key")
+
+
+def _load_upstream_key() -> str:
+    env = (os.environ.get("UPSTREAM_KEY") or "").strip()
+    if env:
+        return env
+    try:
+        with open(UPSTREAM_KEY_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+UPSTREAM_KEY = _load_upstream_key()
+
 # 默认给转发请求注入 chat_template_kwargs.enable_thinking=false。
 # 背景（2026-10-02 实测）：Qwen3.6-35B-A3B 的模板默认开思考链，通用 OpenAI 客户端
 # （如 OpenClaw，baseUrl 指向本代理）不会传 enable_thinking，结果 64 个 token 全被
@@ -429,11 +450,19 @@ def strip_stray_media_markers(body):
 
 # ---------- OpenAI 代理 ----------
 
+def _upstream_headers(extra=None):
+    """构造上游请求头，统一补 Bearer（UPSTREAM_KEY 为空时保持旧行为）。"""
+    h = dict(extra or {})
+    if UPSTREAM_KEY:
+        h["Authorization"] = f"Bearer {UPSTREAM_KEY}"
+    return h
+
+
 def upstream_chat(payload):
     req = urllib.request.Request(
         f"{UPSTREAM}/v1/chat/completions",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"})
+        headers=_upstream_headers({"Content-Type": "application/json"}))
     return json.loads(urllib.request.urlopen(req, timeout=1200).read())
 
 
@@ -534,7 +563,8 @@ def forward_to_upstream(self, method, path, raw=None, stream=False,
     nbytes = 0
     try:
         conn.request(method, path, body=body,
-                     headers={"Content-Type": content_type or "application/json"})
+                     headers=_upstream_headers(
+                         {"Content-Type": content_type or "application/json"}))
         resp = conn.getresponse()
         ctype = resp.getheader("Content-Type", "application/json")
         status = resp.status

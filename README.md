@@ -55,6 +55,12 @@
 │   ├── 08-gufo-halo-evaluation.md       # Gufo（gfx1151 原生 HIP 引擎）可行性与 BIOS 零和代价
 │   ├── 09-strata-community-benchmark-forecast.md # 社区倍数折算 + 四场景收益矩阵 + 场景 D 调优清单
 │   ├── 10-local-llm-daily-baseline.md   # 运行基线快照、参数漂移核查、优化候选、社区数字采纳原则
+│   ├── 2026-11-23-NPU充分利用方案.md     # NPU 非推理用途盘点 + P0/P1/P2 优先级
+│   ├── 2026-11-23-NPU非推理用途.md       # 翻译/embed/ASR 旁路落地与判断力边界
+│   ├── 2026-11-23-文档库审计报告.md      # 索引重复块审计与去备份定
+│   ├── 2026-11-23-P0P1P2执行记录.md      # 向量检索底座与可观测性落地
+│   ├── 2026-11-23-Inkling-2-Mini-对比与可替换性判定.md # 新 looped 模型 vs 本机 35B 的可替换性
+│   ├── 2026-11-23-C类工程侧执行记录.md   # 全量 RAG 混合重排、工具接入、结构化输出
 │   └── 2026-11-*.md                     # 每日增量专题与运行快照（最新 2026-11-23-daily-report.md），见「近期同步」
 ├── models/
 │   ├── qwen3.6-35b-a3b-moe/             # start.sh + benchmarks + legacy-params
@@ -83,9 +89,16 @@
 │   ├── openwebui/  sdcpp-video/         # 前端与视频生成启动脚本
 │   ├── gguf_probe.py                    # 判定 PLE 布局后再定参数
 │   ├── bench-*.py  spec-grid*.sh        # 测速与投机解码网格
+│   ├── bench-ab.py                      # 交错 A/B 压测（uuid 避缓存 + 中位数）
 │   ├── test-npu.py  test-sampling.py    # NPU 与采样验证
 │   ├── analyze_prompt_dump.py           # 请求快照分析：稳定公共前缀 token 数与预加载判定
 │   ├── kv_cache_probe.py                # 逐槽 KV / cache-ram 占用探针
+│   ├── npu-*.py  npu-reindex.sh         # NPU 侧车/索引/去重/审计/健康/门控/混合检索工具集
+│   ├── medcalc.py                       # ★ 临床评分规则引擎（21 项，参数带单位 + 文献标注）
+│   ├── mcp-local.py  structured.py      # 本地 MCP 5 工具 + 结构化输出封装
+│   ├── who-connects.py                  # 只读连接监控（frp 穿透来源判定）
+│   ├── frps-audit.sh  frps-audit-revert.sh # frps 侧真实 IP 审计与回滚
+│   ├── ask-local.sh                     # 一条命令查本地文档库
 │   └── compare-quant-speed-v3.sh        # 量化档位对比
 └── scripts/
     └── switch-model.sh                  # 两档一键切换
@@ -341,6 +354,43 @@ git log --oneline --all --grep='<PR号>' -i
 
 - `drama/2026-11-22-ep007-acceptance.md`：37 条经验编译成检查项（26 auto + 11 manual，**manual 不假装自动通过**）；关键帧根目录残留同名旧图属人工核查盲区；4 镜 14 s 长镜丢字风险照旧。
 - `drama/2026-11-22-pipeline-optimize-report.md`：把「诊断」做成流水线一环 —— 固定采集字段（git/参数/事件/日志/服务）+ 本地模型只做归纳。实测 4 条建议里**有 1 条必须人工否决**（提并发），因为模型看不到「96 GiB 单池、并发必须 = 1」的现场约束。
+
+## 近期同步（2026-11-23 下午批）：能力提升方案逐项判定 + 文档库混合检索落地
+
+上午批（5 篇运行快照 + 2 篇短剧文档）已记于上一节；本批是同日 **09:57–21:42** 新增的 28 个文件，主线是「推理层已见底，增量转向模型选型与工程侧」。
+
+### 一、B1/B2/B3/V1 四项候选逐项判定：全部否决或已生效
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| B1 限 CPU 频率 | **无效**（66.00→66.68 t/s，+1.0% 噪声内） | 交错双向 A/B，解码期 CPU 只做 tokenize/HTTP，无真实功耗竞争 |
+| B2 `-fa on` | **已开启**，无需改 | V 量化 + FA 关会在 `llama-context.cpp:480` 抛异常 |
+| B3 核 KV q8_0 | **已生效**（KV 2720 MiB 精确吻合） | 10 层 attention 各 10880 B/token + 66.3 MB SSM |
+| V1 升级上游 | **否决**（收益 <5%，损失 118 私有提交） | 新版 coopmat2 提交依赖 NVIDIA 扩展，RDNA3.5 零收益 |
+
+同批订正：`76.3 t/s` 是模板化短样本乐观口径，通用长文实测 **66.5 t/s（−13%）**；文档里引用速度必须带口径。
+
+### 二、Inkling 2 Mini（新 looped 模型）可替换性判定：否决替换、可试并行
+
+官方架构 `inkling2_loop`（24 物理层，中间 12 层跑 3 次 → 48 层应用），本机 fork 的 121 个架构里**没有** `LLM_ARCH_INKLING2_LOOP`，需另编上游 ≥ b12641。中文与多轮多约束指令是硬伤（官方自认落后 Qwen3.8-27B），判定为**不能替换 8080 主力**；VRAM 余量够，可作 agentic coding / 图像输入 / 1M 文档的并行副实例。
+
+### 三、文档库从双库手工联合升级为单库混合检索
+
+旧架构两库重复块 **544 个（28.7%）**，漏加 `--extra` 会安静错命中。新架构：`npu-index.py` 全文 md5 去重 → 单库 `idx/all.json`（116 文件 / 1977 块）；`npu-search.py` 向量 + BM25(CJK bigram) 双路召回 → RRF(k=60) → MMR(λ=0.75)，实测 **MRR 0.838 / Hit@5 100%**（单塔 0.504、BM25 0.473）。
+
+### 四、工具接入与结构化输出（C2/C3）
+
+- `medcalc.py`：21 项临床评分规则引擎，参数名带单位后缀避免 mg/dL 与 µmol/L 混用，每项标注原始文献；确定性计算交给规则，不交给 LLM。
+- `mcp-local.py` / `structured.py`：stdio MCP 5 工具 + 结构化输出封装；三条铁律（enum 不进 required、同字段不混 number/string、否定表述须显式声明）。
+
+### 五、公网暴露面处置（P1）
+
+8080 加 `--api-key-file`（key 存 600 权限文件，轮换只改文件+重启）；docproxy/anthropic 桥改为代理侧自动补 Bearer，客户端无感；18090 从 frp 撤除；frps 侧部署真实 IP 审计链（`tools/frps-audit.sh`）。日志已见 Nmap/HNAP1 扫描 32 次。
+
+### 六、新增/更新文件清单
+
+- 文档：`docs/` 6 篇（NPU 充分利用 / 非推理用途 / 文档库审计 / P0P1P2 / Inkling 判定 / C 类工程侧）；`models/qwen3.6-35b-a3b-moe/` 3 篇（能力提升清单 / 中层循环移植 / B1B2B3V1 执行）。
+- 工具：`tools/` 新增 15 个（NPU 工具集、bench-ab、medcalc、mcp-local、structured、who-connects、frps 审计、ask-local），更新 `models/qwen3.6-35b-a3b-moe/start.sh`（+ 上游鉴权）与 `tools/docproxy/docproxy.py`（+ Bearer 注入）。
 
 ## 通用前置（必读）
 
