@@ -1,4 +1,4 @@
-# 本机大模型运行基线快照（起始 2026-11-06，持续更新至 2026-11-23）
+# 本机大模型运行基线快照（起始 2026-11-06，持续更新至 2026-11-25）
 
 来源：本机每日自动探测（无浏览器、全免登录 API 通道），起始 2026-11-06 05:00 (GMT+8)，随日报滚动修订。
 本篇只保留**对部署有复用价值**的部分：实测基线表、参数漂移项、上游动态、优化候选清单、风险项、测速纪律、离线排障。
@@ -31,10 +31,10 @@
 | 模态 | text + vision + video（mmproj f16） | `/props` |
 | 投机解码 | `draft-mtp`，`--spec-draft-n-max 2`，MTP head 为 `Q4_K_M` | `/slots[0].params.speculative.types` + `ps` + `/metrics` 三处交叉验证 |
 | KV 精度 | `-ctk/-ctv q8_0` | `ps` |
-| decode 实测 | **68–88 t/s 区间**（2026-11-18~23 连续实测：82.50 / 81.88 / 82.33 / 81.6 / 81.69 / **87.75**；口径统一为 `n_predict=64`、temp 0、空闲态） | 本机实测，`timings.predicted_per_second` |
-| MTP 接受率 | 80.6–81.6%（11-18~23 实测；**跨重启归零，仅同日可比**） | `/metrics` |
-| 二进制 | b10824-75147a27e（上游已达 `b12633`，落后 ≈1809 build） | 本机 `/props` + releases API |
-| 监听地址 | `0.0.0.0`（连续 46+ 日未收窄） | `ps` |
+| decode 实测 | **68–88 t/s 区间**（2026-11-18~25 连续实测：82.50 / 81.88 / 82.33 / 81.6 / 81.69 / 87.75 / **79.34**；11-18~23 口径 `n_predict=64`、temp 0；11-25 为 `n128` 三测 76.96/79.99/79.34 中位，**两种口径不可直接比**） | 本机实测，`timings.predicted_per_second` |
+| MTP 接受率 | 80.6–84.8%（11-18~25 实测；11-25 为 84.78%；**跨重启归零，仅同日起点后可比**） | `/metrics` |
+| 二进制 | b10824-75147a27e（上游已达 `b12686`，落后 ≈1862 build） | 本机 `/props` + releases API |
+| 监听地址 | `0.0.0.0`（连续 48+ 日未收窄；8080 已加 `--api-key-file`，无 key 访问 401） | `ps` |
 
 > 交叉验证方法值得复用：`/slots` 的 `speculative.types`、进程命令行参数、`/metrics` 里的 draft 计数三处若不一致，说明配置没真正生效。
 
@@ -54,6 +54,8 @@
 | 仲裁器 `need_gib` | 64 | 64，`auto_resume=true` | 一致 |
 | 附加核实 | — | sampler `res_multistep`、scheduler `simple`、fps 24、母版 libx264/crf18/veryfast、音频 `loudnorm I=-16:TP=-1.5:LRA=11` + 44100 Hz | 与质检修复结论一致 |
 
+**字段探针纪律（11-25 修正）**：判定「某字段缺失」前必须先核对字段实际路径与拼写 —— 11-24 日报记「cfg 字段缺失」，11-25 复核发现 `cfg_scale=1.0` 实际存在且值正确（蒸馏模型保持 1.0），属探查脚本字段路径写错导致的误报。
+
 **MiniMax-H3 参数社区共识**（用于校准，非本机实测）：
 
 - 质量档：steps **20–30**、CFG 3–7
@@ -67,12 +69,12 @@
 
 | 维度 | 本机现状 | 社区同硬件参考 | 差距 / 动作 |
 |---|---|---|---|
-| decode（35B-A3B MoE） | **68–88 t/s 区间**（2026-11-18~23，MTP n=2） | 同模型 Q4_K_M + MTP **93 t/s**（同硬件 Vulkan）；无 MTP 62 t/s；UD-Q4 MTP n=4 约 77.7 t/s（Metal 另类硬件） | 已第一梯队；`--moe-cache-mib` 在 `-ngl 999` 下被自动禁用，**该候选作废**；n-max 3→4 或有 +3~6%（需质量人核） |
+| decode（35B-A3B MoE） | **68–88 t/s 区间**（2026-11-18~25，MTP n=2；11-25 中位 79.34） | 同模型 Q4_K_M + MTP **93 t/s**（同硬件 Vulkan）；无 MTP 62 t/s；UD-Q4 MTP n=4 约 77.7 t/s（Metal 另类硬件） | 已第一梯队；`--moe-cache-mib` 在 `-ngl 999` 下被自动禁用，**该候选作废**；n-max 3→4 或有 +3~6%（需质量人核） |
 | prefill | 短样本无效；历史 `/metrics` avg 约 365 | pp512 414（27B Q4）；pp8192 1409（30B-A3B） | **本机短板**，标准复核须 `llama-bench -p 512`；勿引用短样本数字 |
 | 上下文 | 262144 全量 | 社区多默认 128k 规避长 prefill；**实测长窗口会吃掉大部分 MTP 收益（空窗 3.1× → 256K 1.15×）** | 本机满配，长会话下需单测 MTP on/off |
-| KV cache | q8_0 | 上游有 Vulkan Q4_0 KV fast path（未合并进本机 build） | 可 cherry-pick |
-| MTP 加速 | n-max 2，接受率 80.6–81.6%（11-18~23） | n=2→73.0 / n=3→76.0 / n=4→77.7 / n=5→74.7 t/s（M2 Ultra 同模型）；**采样器必须与 drafter 对齐**，否则接受率 59.6%→45.7% 且墙钟慢 2.8× | 提 n-max 后需 A/B 质量人核；接受率下滑时优先试换 Q8 草稿头 |
-| 上游版本 | b10824（11-23 落后 **1809** build） | b12633（2026-11-22 14:53Z） | 定制 fork **不可整包替换**，只做 cherry-pick 评估；先备 mesa deb |
+| KV cache | q8_0 | 上游有 Vulkan Q4_0 KV fast path（未合并进本机 build）；AMD 侧 #31234（HIP FATTN q4_0/q8_0 KV）未落地 | 可 cherry-pick |
+| MTP 加速 | n-max 2，接受率 80.6–84.8%（11-18~25；11-25 为 84.78%） | n=2→73.0 / n=3→76.0 / n=4→77.7 / n=5→74.7 t/s（M2 Ultra 同模型）；**采样器必须与 drafter 对齐**，否则接受率 59.6%→45.7% 且墙钟慢 2.8× | 提 n-max 后需 A/B 质量人核；接受率下滑时优先试换 Q8 草稿头；**#27950 的 fix 已落地本机，见第七节** |
+| 上游版本 | b10824（11-25 落后 **1862** build） | b12686（2026-11-24 22:45Z） | 定制 fork **不可整包替换**，只做 cherry-pick 评估；先备 mesa deb |
 | 驱动栈 | Mesa 26.0.8 **钉死 + apt-mark hold** | 新版本可用但曾致 Vulkan 全崩 | 稳定性优先，刻意不跟 |
 | 出片 steps | 12 | 20–30 | 回滚 20 |
 
@@ -149,7 +151,7 @@ cd $HOME/llama-qwen4exp-rocmfpx && git pull && cmake --build build-vk4 --target 
 | 同硬件 27B Vulkan 横评 | Q4_K_M 16.8 / Q6_K 14.2 / Q8_0 11.3 t/s | 仅作旁证，与 MoE 35B-A3B 不可比 |
 | 低可信度内容 | 有文称 176B 模型 BF16 仅 8.6 GB，与体量严重矛盾 | `[UNVERIFIED]`，只采信其中可独立验证的部分（如「Vulkan 后端须自行编译」） |
 | 「MoE 投机陷阱」-60% | 35B-A3B UD-Q4 无 draft 43.1 t/s，加 1.5B **独立 draft 模型**降到 17.5 t/s，归因「专家加载税」 | **不适用于内嵌 MTP**：本机 draft 是主模型自带的 MTP heads（`-md` 只加载 heads），实测 80–88 t/s。该文的结论边界是「独立 draft 模型 + 专家模型」组合，**不要拿来否定 MTP** |
-| 判断「上游 PR 是否已在本机」 | — | **禁用 `git merge-base --is-ancestor <PR号> HEAD`**（PR 号不是 git 对象，报 `Not a valid object name` 且失败分支常被 `if` 静默吞掉）。正解：`git log --oneline --all --grep='<PR号>' -i` |
+| 判断「上游 PR 是否已在本机」 | — | **禁用 `git merge-base --is-ancestor <PR号> HEAD`**（PR 号不是 git 对象，报 `Not a valid object name` 且失败分支常被 `if` 静默吞掉）。正解：`git log --oneline --all --grep='<PR号>' -i`。据此核实 **`#27950` 已落地**：fork commit `a515d6093`（2026-10-12）cherry-pick 上游 #27694，说明含 `Fixes #27950`；历史「未解」作废。11-24 新增 AMD 强相关项 #32839 / #31234 / #32936 未落地 |
 
 > 通用纪律：任何外部速度数字先核对**模型量级、量化格式、窗口长度、后端**四要素，缺一项不得直接与本站基线比较。
 

@@ -392,6 +392,33 @@ git log --oneline --all --grep='<PR号>' -i
 - 文档：`docs/` 6 篇（NPU 充分利用 / 非推理用途 / 文档库审计 / P0P1P2 / Inkling 判定 / C 类工程侧）；`models/qwen3.6-35b-a3b-moe/` 3 篇（能力提升清单 / 中层循环移植 / B1B2B3V1 执行）。
 - 工具：`tools/` 新增 15 个（NPU 工具集、bench-ab、medcalc、mcp-local、structured、who-connects、frps 审计、ask-local），更新 `models/qwen3.6-35b-a3b-moe/start.sh`（+ 上游鉴权）与 `tools/docproxy/docproxy.py`（+ Bearer 注入）。
 
+## 近期同步（2026-11-24 ~ 11-25）：鉴权后全字段实测、MTP 结论两处订正
+
+两篇运行快照：`docs/2026-11-24-daily-report.md`、`docs/2026-11-25-daily-report.md`。主线是**公网暴露面处置加 key 之后，首次拿到完整遥测**，据此订正了两条长期口径。
+
+### 一、8080 加 key 后的排障常态
+
+无 key 访问 `/props`、`/v1/models` 返回 401（`/health` 仍 ok）—— 这是鉴权正常拦截，不是故障。带 key 才能拿全字段；key 存 600 权限文件，命令中不得出现明文。11-25 首次完成 `/props`+`/slots`+`/metrics` 全字段实测。
+
+### 二、decode 与 MTP 接受率刷新（订正 `docs/10`）
+
+- decode 三测 **76.96 / 79.99 / 79.34 t/s，中位 79.34**（n128、temp 0、GPU 空闲），落 68–88 区间中部。与 11-18~23 的 `n_predict=64` 口径**不可直接比**。
+- MTP 接受率 **84.78%**（49,242 draft / 41,741 accepted），较 11-23 的 80.65% +4.13pp，但累计起点与样本量不同，不视为趋势。
+- 上游 b12655 → **b12686**，本机落后 ≈**1862** build；host 收窄 48+ 日未改。
+
+### 三、★ `#27950` 结论推翻：fix 早已落地
+
+历史用 `git merge-base --is-ancestor <PR号> HEAD` 判断 PR 是否落地是**错的**（PR 号非 git 对象，失败分支常被 `if` 静默吞掉）。正解 `git log --oneline --all --grep='#<号>' -i`。据此核实：**`#27950`（draft-mtp 改变确定性输出）的 fix 已随上游 #27694 于 2026-10-12 cherry-pick 到本机 fork**（commit `a515d6093`，说明含 `Fixes #27950`）。历史「未解」表述作废；但 n-max 调整后仍须人工比对输出文本，禁止仅看 t/s。11-24 新增 AMD 强相关项 #32839（HIP readlane）、#31234（HIP q4_0/q8_0 KV FATTN）、#32936（MQA axis-0 split）经同法核实未落地。
+
+### 四、两处社区数据订正
+
+- H3 的 `cfg_scale=1.0` 字段**实际存在**（11-24 报「缺失」是探查脚本字段路径写错）；判定字段缺失前必须先核对路径与拼写。
+- 1M ctx 来源归属纠正：1M/YaRN 条目全属 DGX Spark（GB10），**Strata 实测为 181,072 ctx，非 1M**；原「DGX Spark/Strata」并列表述已作废。
+
+### 五、新增工具
+
+- `tools/sniff-port.py`：`psutil` 高频采样定位连向指定端口的本机进程（短连接轮询抓不到时的补充），与 `tools/who-connects.py` 配套。
+
 ## 通用前置（必读）
 
 - `VK_ICD_FILENAMES` 必须指向真实存在的 ICD 文件，否则 Vulkan 枚举不到设备 → 静默退化 CPU 推理（速度掉 2 倍+ 且不报错）。
